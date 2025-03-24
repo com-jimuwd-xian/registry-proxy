@@ -1,11 +1,30 @@
-/tmp
-/out-tsc
-
-/node_modules
+# Logs
+logs
+*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-/.pnp
-.pnp.js
+pnpm-debug.log*
+lerna-debug.log*
 
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
 .vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# 约定：不使用npm构建，统一使用yarn(berry)构建
+package-lock.json
+# 忽略掉yarn berry本地缓存路径.yarn
+.yarn/
+yarn.lock

@@ -1,14 +1,24 @@
 {
-  "name": "${PROJECT_NAME}",
+  "name": "com.jimuwd.xian.registry-proxy",
   "version": "1.0.0",
-  "description": "",
+  "type": "module",
+  "description": "A lightweight npm registry proxy with fallback support",
   "main": "dist/index.js",
+  "bin": {
+    "registry-proxy": "dist/index.js"
+  },
   "scripts": {
-    "build": "tsc"
+    "build": "tsc",
+    "deploy": "yarn build && yarn npm publish"
   },
-  "dependencies": {},
+  "dependencies": {
+    "js-yaml": "latest",
+    "node-fetch": "latest"
+  },
   "devDependencies": {
-    "typescript": "^5.5.3"
+    "@types/js-yaml": "latest",
+    "@types/node": "latest",
+    "typescript": "latest"
   },
-  "private": true
+  "packageManager": "yarn@4.6.0"
 }
