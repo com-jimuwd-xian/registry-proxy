@@ -17,24 +17,23 @@
 ## 快速上手指南
 
 ### 安装
-在你的业务项目中，将 `com.jimuwd.xian.registry-proxy` 添加为开发依赖。假设你的私有 Yarn 仓库地址为 `https://your-private-registry.example.com/`：
+在你的业务项目中，将 `com.jimuwd.xian.registry-proxy` 添加为开发依赖。假设你的私有 Yarn 仓库地址为 `https://repo.jimuwd.com/jimuwd/~npm/`：
 
 ```bash
-yarn add --dev com.jimuwd.xian.registry-proxy --registry https://your-private-registry.example.com/
+yarn add --dev com.jimuwd.xian.registry-proxy --registry https://repo.jimuwd.com/jimuwd/~npm/
 ```
 
 ### 配置
 1. **代理配置文件 `.registry-proxy.yml`**  
-   在业务项目根目录创建 `.registry-proxy.yml`，指定需要代理的 registry 列表：
+   在业务项目根目录创建 `.registry-proxy.yml`，指定需要代理的 registry 列表。每个 registry 必须至少是一个空对象 `{}`，否则会导致解析错误：
    ```yaml
    registries:
      "http://localhost:4873/":
        npmAuthToken: "local-token" # 可选
      "https://registry.npmjs.org/":
-       # token 可省略，从 Yarn 配置读取
-     "https://your-private-registry.example.com/":
+       {}                          # 无 token 时使用空对象
+     "https://repo.jimuwd.com/jimuwd/~npm/":
        npmAuthToken: "private-token" # 可选
-       npmAlwaysAuth: true          # 强制要求认证
    ```
 
 2. **本地 `.yarnrc.yml`**  
@@ -51,9 +50,9 @@ yarn add --dev com.jimuwd.xian.registry-proxy --registry https://your-private-re
    npmRegistries:
      "https://registry.npmjs.org/":
        npmAuthToken: "global-npm-token"
-     "https://your-private-registry.example.com/":
+     "https://repo.jimuwd.com/jimuwd/~npm/":
        npmAuthToken: "global-private-token"
-       npmAlwaysAuth: true
+       npmAlwaysAuth: true          # 可选，控制 Yarn 行为
    ```
 
 ### 使用
@@ -109,7 +108,7 @@ yarn add --dev com.jimuwd.xian.registry-proxy --registry https://your-private-re
    ```bash
    yarn install
    ```
-   - 代理会在安装完成后自动停止。
+    - 代理会在安装完成后自动停止。
 
 ### 输出示例
 运行后，你会看到类似以下输出：
@@ -138,27 +137,27 @@ com.jimuwd.xian.registry-proxy/
 
 ### 功能实现
 1. **配置加载（`loadRegistries`）**：
-   - **代理配置文件**：从指定路径（默认 `./.registry-proxy.yml`）读取 `registries`，提取 `registryUrl` 和 `npmAuthToken`。
-   - **Yarn 配置文件回退**：如果 `.registry-proxy.yml` 中 token 缺失，依次从本地 `.yarnrc.yml`（默认 `./.yarnrc.yml`）和全局 `~/.yarnrc.yml`（默认 `~/.yarnrc.yml`）读取对应 `registryUrl` 的 `npmAuthToken`。
-   - **安全设计**：将 `registryUrl` 和 token 配置独立于 `.registry-proxy.yml`，避免敏感信息直接写入 Yarn 配置文件并提交到代码仓库。回退到 Yarn 配置的 token（尤其是全局配置）进一步降低安全隐患。
-   - **优先级**：`.registry-proxy.yml` token > 本地 `.yarnrc.yml` token > 全局 `~/.yarnrc.yml` token > 无 token。
-   - **错误处理**：`.registry-proxy.yml` 必须存在且包含 `registries`，否则退出。
+    - **代理配置文件**：从指定路径（默认 `./.registry-proxy.yml`）读取 `registries`，提取 `registryUrl` 和 `npmAuthToken`。
+    - **Yarn 配置文件回退**：如果 `.registry-proxy.yml` 中 token 缺失，依次从本地 `.yarnrc.yml`（默认 `./.yarnrc.yml`）和全局 `~/.yarnrc.yml`（默认 `~/.yarnrc.yml`）读取对应 `registryUrl` 的 `npmAuthToken`。
+    - **安全设计**：将 `registryUrl` 和 token 配置独立于 `.registry-proxy.yml`，避免敏感信息直接写入 Yarn 配置文件并提交到代码仓库。回退到 Yarn 配置的 token（尤其是全局配置）进一步降低安全隐患。
+    - **优先级**：`.registry-proxy.yml` token > 本地 `.yarnrc.yml` token > 全局 `~/.yarnrc.yml` token > 无 token。
+    - **错误处理**：`.registry-proxy.yml` 必须存在且包含 `registries`，否则退出。
 
 2. **代理逻辑**：
-   - **服务器**：使用 Node.js 的 `http.createServer` 创建本地 HTTP 服务，默认监听 `4873` 端口。
-   - **请求转发**：将所有请求按配置顺序转发到目标 registry，附带对应的 `Authorization: Bearer <token>`（如果存在）。
-   - **Fallback**：依次尝试每个 registry，直到返回成功响应（`response.ok`）或全部失败（返回 404）。
+    - **服务器**：使用 Node.js 的 `http.createServer` 创建本地 HTTP 服务，默认监听 `4873` 端口。
+    - **请求转发**：将所有请求按配置顺序转发到目标 registry，附带对应的 `Authorization: Bearer <token>`（如果存在）。
+    - **Fallback**：依次尝试每个 registry，直到返回成功响应（`response.ok`）或全部失败（返回 404）。
 
 3. **进程管理**：
-   - **优雅关闭**：监听 `SIGTERM` 信号，关闭服务器并退出进程。
-   - **脚本集成**：通过 shell 脚本记录 PID，安装完成后发送 SIGTERM 停止服务。
+    - **优雅关闭**：监听 `SIGTERM` 信号，关闭服务器并退出进程。
+    - **脚本集成**：通过 shell 脚本记录 PID，安装完成后发送 SIGTERM 停止服务。
 
 ### 技术栈
 - **语言**：TypeScript（ES Modules）。
 - **模块系统**：`"module": "nodenext"`，兼容 Node.js v20+。
 - **依赖**：
-   - `node-fetch@^3.3.2`：发起 HTTP 请求。
-   - `js-yaml@^4.1.0`：解析 `.registry-proxy.yml` 和 `.yarnrc.yml` 文件。
+    - `node-fetch@^3.3.2`：发起 HTTP 请求。
+    - `js-yaml@^4.1.0`：解析 `.registry-proxy.yml` 和 `.yarnrc.yml` 文件。
 - **Node.js 版本**：推荐 v14+，测试于 v20.17.0。
 
 ### CLI 参数
@@ -177,32 +176,36 @@ yarn run registry-proxy ./custom-registry.yml ./custom-yarn.yml ~/.custom-yarn.y
 
 ### 配置说明
 - **`.registry-proxy.yml`**：
-   - 使用 `registries` 字段定义代理的 registry 列表，与 Yarn 的 `npmRegistries` 区分。
-   - 示例：
-     ```yaml
-     registries:
-       "https://your-private-registry.example.com/":
-         npmAuthToken: "private-token"
-         npmAlwaysAuth: true
-     ```
-- **`npmAlwaysAuth: true`**：
-   - 在需要认证的 registry 下添加此配置，表示所有请求必须携带 `npmAuthToken`。
-   - **原因**：某些私有仓库要求即使访问公共包也需要认证，设置此项避免因缺少 token 导致的 401 错误。
-- **Yarn 配置**：
-   - `.yarnrc.yml` 仅用于设置 `npmRegistryServer` 和回退 token，不定义代理的 registry 列表。
+    - 使用 `registries` 字段定义代理的 registry 列表，与 Yarn 的 `npmRegistries` 区分。
+    - **格式要求**：每个 `registryUrl` 后必须跟一个对象（至少是 `{}`），否则解析为 `null` 会导致运行时错误。例如：
+      ```yaml
+      registries:
+        "https://repo.jimuwd.com/jimuwd/~npm/": {}  # 正确
+        "https://repo.jimuwd.com/jimuwd/~npm/":     # 错误，会解析为 null
+      ```
+    - 示例：
+      ```yaml
+      registries:
+        "https://repo.jimuwd.com/jimuwd/~npm/":
+          npmAuthToken: "private-token"
+      ```
+    - **注意**：无需配置 `npmAlwaysAuth`，此项仅适用于 Yarn 的 `.yarnrc.yml`，对代理行为无影响。
+- **`.yarnrc.yml`**：
+    - 仅用于设置 `npmRegistryServer` 和回退 token。
+    - 如果需要强制认证，可在回退的 Yarn 配置中添加 `npmAlwaysAuth: true`。
 
 ### 注意事项
 1. **端口冲突**：
-   - 默认端口 `4873` 是 Verdaccio 的惯用端口，可能与其他工具冲突。
-   - 检查端口占用：`lsof -i :4873`。
-   - 可通过参数指定其他端口（如 `54321`）。
+    - 默认端口 `4873` 是 Verdaccio 的惯用端口，可能与其他工具冲突。
+    - 检查端口占用：`lsof -i :4873`。
+    - 可通过参数指定其他端口（如 `54321`）。
 2. **配置文件格式**：
-   - 确保 `.registry-proxy.yml` 包含 `registries` 字段，`.yarnrc.yml` 包含 `npmRegistryServer`。
+    - 确保 `.registry-proxy.yml` 包含 `registries` 字段，`.yarnrc.yml` 包含 `npmRegistryServer`。
 3. **日志**：
-   - 当前通过 `console.log` 输出启动信息，可扩展为文件日志。
+    - 当前通过 `console.log` 输出启动信息，可扩展为文件日志。
 4. **安全性**：
-   - 代理运行于本地，未开放外部访问，确保 `unsafeHttpWhitelist` 配置正确。
-   - 优先将 token 放入 `.registry-proxy.yml` 或全局 `.yarnrc.yml`，避免提交到代码仓库。
+    - 代理运行于本地，未开放外部访问，确保 `unsafeHttpWhitelist` 配置正确。
+    - 优先将 token 放入 `.registry-proxy.yml` 或全局 `.yarnrc.yml`，避免提交到代码仓库。
 
 ### 开发与发布
 1. **构建**：
@@ -211,46 +214,31 @@ yarn run registry-proxy ./custom-registry.yml ./custom-yarn.yml ~/.custom-yarn.y
    ```
 2. **发布到私有仓库**：
    ```bash
-   yarn publish --registry https://your-private-registry.example.com/
+   yarn publish --registry https://repo.jimuwd.com/jimuwd/~npm/
    ```
 
 ---
 
 ### 测试流程
-1. **构建并发布**：
+1. **更新 `.registry-proxy.yml`**：
+   ```yaml
+   registries:
+     "https://repo.jimuwd.com/jimuwd/~npm/": {}
+     "https://registry.npmjs.org/": {}
+   ```
+2. **构建并发布**：
    ```bash
    cd registry-proxy
    yarn install
    yarn build
-   yarn publish --registry https://your-private-registry.example.com/
+   yarn publish --registry https://repo.jimuwd.com/jimuwd/~npm/
    ```
-2. **业务项目配置**：
-   - `.registry-proxy.yml`：
-     ```yaml
-     registries:
-       "http://localhost:4873/":
-         npmAuthToken: "local-token"
-       "https://registry.npmjs.org/":
-         # 无 token，回退到 Yarn 配置
-       "https://your-private-registry.example.com/":
-         npmAuthToken: "private-token"
-         npmAlwaysAuth: true
-     ```
-   - `.yarnrc.yml`：
-     ```yaml
-     npmRegistryServer: "http://localhost:4873/"
-     unsafeHttpWhitelist:
-       - "localhost"
-     ```
-   - `~/.yarnrc.yml`：
-     ```yaml
-     npmRegistries:
-       "https://registry.npmjs.org/":
-         npmAuthToken: "global-npm-token"
-     ```
-3. **运行**：
+3. **更新业务项目**：
    ```bash
-   yarn install
+   cd your-business-project
+   yarn add com.jimuwd.xian.registry-proxy@latest --registry https://repo.jimuwd.com/jimuwd/~npm/
    ```
-
-
+4. **运行**：
+   ```bash
+   bash start-proxy.sh
+   ```

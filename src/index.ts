@@ -7,11 +7,10 @@ import { homedir } from 'os';
 import { join } from 'path';
 
 interface RegistryConfig { npmAuthToken?: string; }
-interface ProxyConfig { registries: Record<string, RegistryConfig>; }
-interface YarnConfig { npmRegistries?: Record<string, RegistryConfig>; }
+interface ProxyConfig { registries: Record<string, RegistryConfig | null>; }
+interface YarnConfig { npmRegistries?: Record<string, RegistryConfig | null>; }
 
 async function loadRegistries(proxyConfigPath = './.registry-proxy.yml', localYarnConfigPath = './.yarnrc.yml', globalYarnConfigPath = join(homedir(), '.yarnrc.yml')): Promise<{ url: string; token?: string }[]> {
-    // 读取独立的 .registry-proxy.yml
     let proxyConfig: ProxyConfig = { registries: {} };
     try {
         const proxyYamlContent = await readFile(proxyConfigPath, 'utf8');
@@ -19,7 +18,7 @@ async function loadRegistries(proxyConfigPath = './.registry-proxy.yml', localYa
         console.log(`Loaded proxy config from ${proxyConfigPath}`);
     } catch (e) {
         console.error(`Failed to load ${proxyConfigPath}: ${(e as Error).message}`);
-        process.exit(1); // 代理配置文件是必须的
+        process.exit(1);
     }
 
     if (!proxyConfig.registries || !Object.keys(proxyConfig.registries).length) {
@@ -27,8 +26,7 @@ async function loadRegistries(proxyConfigPath = './.registry-proxy.yml', localYa
         process.exit(1);
     }
 
-    // 读取本地 .yarnrc.yml（用于 token 回退）
-    let localYarnConfig: YarnConfig = {};
+    let localYarnConfig: YarnConfig = { npmRegistries: {} };
     try {
         const localYamlContent = await readFile(localYarnConfigPath, 'utf8');
         localYarnConfig = load(localYamlContent) as YarnConfig;
@@ -37,8 +35,7 @@ async function loadRegistries(proxyConfigPath = './.registry-proxy.yml', localYa
         console.warn(`Failed to load ${localYarnConfigPath}: ${(e as Error).message}`);
     }
 
-    // 读取全局 ~/.yarnrc.yml（用于 token 回退）
-    let globalYarnConfig: YarnConfig = {};
+    let globalYarnConfig: YarnConfig = { npmRegistries: {} };
     try {
         const globalYamlContent = await readFile(globalYarnConfigPath, 'utf8');
         globalYarnConfig = load(globalYamlContent) as YarnConfig;
@@ -47,19 +44,20 @@ async function loadRegistries(proxyConfigPath = './.registry-proxy.yml', localYa
         console.warn(`Failed to load ${globalYarnConfigPath}: ${(e as Error).message}`);
     }
 
-    // 从 .registry-proxy.yml 获取 registries，并回退读取 token
     const registries = Object.entries(proxyConfig.registries).map(([url, regConfig]) => {
-        let token = regConfig.npmAuthToken?.replace(/\${(.+)}/, (_, key) => process.env[key] || '') || regConfig.npmAuthToken;
+        let token: string | undefined;
 
-        // 如果 .registry-proxy.yml 未提供 token，从本地 .yarnrc.yml 回退
-        if (!token && localYarnConfig.npmRegistries && localYarnConfig.npmRegistries[url]) {
-            token = localYarnConfig.npmRegistries[url].npmAuthToken?.replace(/\${(.+)}/, (_, key) => process.env[key] || '') || localYarnConfig.npmRegistries[url].npmAuthToken;
+        if (regConfig && 'npmAuthToken' in regConfig) {
+            token = regConfig.npmAuthToken?.replace(/\${(.+)}/, (_, key) => process.env[key] || '') || regConfig.npmAuthToken;
+        }
+
+        if (!token && localYarnConfig.npmRegistries?.[url] && 'npmAuthToken' in localYarnConfig.npmRegistries[url]) {
+            token = localYarnConfig.npmRegistries[url]!.npmAuthToken?.replace(/\${(.+)}/, (_, key) => process.env[key] || '') || localYarnConfig.npmRegistries[url]!.npmAuthToken;
             console.log(`Token for ${url} not found in ${proxyConfigPath}, using local Yarn config`);
         }
 
-        // 如果本地 .yarnrc.yml 仍无 token，从全局 ~/.yarnrc.yml 回退
-        if (!token && globalYarnConfig.npmRegistries && globalYarnConfig.npmRegistries[url]) {
-            token = globalYarnConfig.npmRegistries[url].npmAuthToken?.replace(/\${(.+)}/, (_, key) => process.env[key] || '') || globalYarnConfig.npmRegistries[url].npmAuthToken;
+        if (!token && globalYarnConfig.npmRegistries?.[url] && 'npmAuthToken' in globalYarnConfig.npmRegistries[url]) {
+            token = globalYarnConfig.npmRegistries[url]!.npmAuthToken?.replace(/\${(.+)}/, (_, key) => process.env[key] || '') || globalYarnConfig.npmRegistries[url]!.npmAuthToken;
             console.log(`Token for ${url} not found in local Yarn config, using global Yarn config`);
         }
 
