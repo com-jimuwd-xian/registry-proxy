@@ -138,6 +138,7 @@ com.jimuwd.xian.registry-proxy/
 ### 功能实现
 1. **配置加载（`loadRegistries`）**：
     - **代理配置文件**：从指定路径（默认 `./.registry-proxy.yml`）读取 `registries`，提取 `registryUrl` 和 `npmAuthToken`。
+    - **URL 规范化**：自动去除 `registryUrl` 尾部斜杠，确保 `https://example.com/path/` 和 `https://example.com/path` 被视为同一地址，后配置覆盖前配置。
     - **Yarn 配置文件回退**：如果 `.registry-proxy.yml` 中 token 缺失，依次从本地 `.yarnrc.yml`（默认 `./.yarnrc.yml`）和全局 `~/.yarnrc.yml`（默认 `~/.yarnrc.yml`）读取对应 `registryUrl` 的 `npmAuthToken`。
     - **安全设计**：将 `registryUrl` 和 token 配置独立于 `.registry-proxy.yml`，避免敏感信息直接写入 Yarn 配置文件并提交到代码仓库。回退到 Yarn 配置的 token（尤其是全局配置）进一步降低安全隐患。
     - **优先级**：`.registry-proxy.yml` token > 本地 `.yarnrc.yml` token > 全局 `~/.yarnrc.yml` token > 无 token。
@@ -180,8 +181,8 @@ yarn run registry-proxy ./custom-registry.yml ./custom-yarn.yml ~/.custom-yarn.y
     - **格式要求**：每个 `registryUrl` 后必须跟一个对象（至少是 `{}`），否则解析为 `null` 会导致运行时错误。例如：
       ```yaml
       registries:
-        "https://repo.jimuwd.com/jimuwd/~npm/": {}  # 正确
-        "https://repo.jimuwd.com/jimuwd/~npm/":     # 错误，会解析为 null
+        "https://repo.jimuwd.com/some/project/path/~npm/": {}  # 正确
+        "https://repo.jimuwd.com/some/project/path1/~npm/":     # 错误，会解析为 null
       ```
     - 示例：
       ```yaml

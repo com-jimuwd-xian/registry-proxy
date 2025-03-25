@@ -10,6 +10,11 @@ interface RegistryConfig { npmAuthToken?: string; }
 interface ProxyConfig { registries: Record<string, RegistryConfig | null>; }
 interface YarnConfig { npmRegistries?: Record<string, RegistryConfig | null>; }
 
+// 规范化 URL，去除尾部斜杠
+function normalizeUrl(url: string): string {
+    return url.endsWith('/') ? url.slice(0, -1) : url;
+}
+
 async function loadRegistries(proxyConfigPath = './.registry-proxy.yml', localYarnConfigPath = './.yarnrc.yml', globalYarnConfigPath = join(homedir(), '.yarnrc.yml')): Promise<{ url: string; token?: string }[]> {
     let proxyConfig: ProxyConfig = { registries: {} };
     try {
@@ -44,20 +49,28 @@ async function loadRegistries(proxyConfigPath = './.registry-proxy.yml', localYa
         console.warn(`Failed to load ${globalYarnConfigPath}: ${(e as Error).message}`);
     }
 
-    const registries = Object.entries(proxyConfig.registries).map(([url, regConfig]) => {
+    // 使用 Map 合并重复的 URL
+    const registryMap = new Map<string, RegistryConfig | null>();
+    for (const [url, regConfig] of Object.entries(proxyConfig.registries)) {
+        const normalizedUrl = normalizeUrl(url);
+        registryMap.set(normalizedUrl, regConfig); // 后配置覆盖前配置
+    }
+
+    const registries = Array.from(registryMap.entries()).map(([url, regConfig]) => {
         let token: string | undefined;
 
         if (regConfig && 'npmAuthToken' in regConfig) {
             token = regConfig.npmAuthToken?.replace(/\${(.+)}/, (_, key) => process.env[key] || '') || regConfig.npmAuthToken;
         }
 
-        if (!token && localYarnConfig.npmRegistries?.[url] && 'npmAuthToken' in localYarnConfig.npmRegistries[url]) {
-            token = localYarnConfig.npmRegistries[url]!.npmAuthToken?.replace(/\${(.+)}/, (_, key) => process.env[key] || '') || localYarnConfig.npmRegistries[url]!.npmAuthToken;
+        const normalizedUrl = normalizeUrl(url);
+        if (!token && localYarnConfig.npmRegistries?.[normalizedUrl] && 'npmAuthToken' in localYarnConfig.npmRegistries[normalizedUrl]) {
+            token = localYarnConfig.npmRegistries[normalizedUrl]!.npmAuthToken?.replace(/\${(.+)}/, (_, key) => process.env[key] || '') || localYarnConfig.npmRegistries[normalizedUrl]!.npmAuthToken;
             console.log(`Token for ${url} not found in ${proxyConfigPath}, using local Yarn config`);
         }
 
-        if (!token && globalYarnConfig.npmRegistries?.[url] && 'npmAuthToken' in globalYarnConfig.npmRegistries[url]) {
-            token = globalYarnConfig.npmRegistries[url]!.npmAuthToken?.replace(/\${(.+)}/, (_, key) => process.env[key] || '') || globalYarnConfig.npmRegistries[url]!.npmAuthToken;
+        if (!token && globalYarnConfig.npmRegistries?.[normalizedUrl] && 'npmAuthToken' in globalYarnConfig.npmRegistries[normalizedUrl]) {
+            token = globalYarnConfig.npmRegistries[normalizedUrl]!.npmAuthToken?.replace(/\${(.+)}/, (_, key) => process.env[key] || '') || globalYarnConfig.npmRegistries[normalizedUrl]!.npmAuthToken;
             console.log(`Token for ${url} not found in local Yarn config, using global Yarn config`);
         }
 
