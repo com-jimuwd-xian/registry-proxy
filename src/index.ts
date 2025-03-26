@@ -1,59 +1,67 @@
 #!/usr/bin/env node
 import { createServer, Server } from 'http';
+import { AddressInfo } from 'net';
 import { readFile } from 'fs/promises';
 import { load } from 'js-yaml';
 import fetch, { Response } from 'node-fetch';
 import { homedir } from 'os';
-import { join } from 'path';
+import { join, resolve } from 'path';
+import { writeFileSync } from 'fs';
 
 interface RegistryConfig { npmAuthToken?: string; }
 interface ProxyConfig { registries: Record<string, RegistryConfig | null>; }
 interface YarnConfig { npmRegistries?: Record<string, RegistryConfig | null>; }
 
-// 规范化 URL，去除尾部斜杠
 function normalizeUrl(url: string): string {
     return url.endsWith('/') ? url.slice(0, -1) : url;
 }
 
+function resolvePath(path: string): string {
+    return path.startsWith('~/') ? join(homedir(), path.slice(2)) : resolve(path);
+}
+
 async function loadRegistries(proxyConfigPath = './.registry-proxy.yml', localYarnConfigPath = './.yarnrc.yml', globalYarnConfigPath = join(homedir(), '.yarnrc.yml')): Promise<{ url: string; token?: string }[]> {
+    const resolvedProxyPath = resolvePath(proxyConfigPath);
+    const resolvedLocalYarnPath = resolvePath(localYarnConfigPath);
+    const resolvedGlobalYarnPath = resolvePath(globalYarnConfigPath);
+
     let proxyConfig: ProxyConfig = { registries: {} };
     try {
-        const proxyYamlContent = await readFile(proxyConfigPath, 'utf8');
+        const proxyYamlContent = await readFile(resolvedProxyPath, 'utf8');
         proxyConfig = load(proxyYamlContent) as ProxyConfig;
-        console.log(`Loaded proxy config from ${proxyConfigPath}`);
+        console.log(`Loaded proxy config from ${resolvedProxyPath}`);
     } catch (e) {
-        console.error(`Failed to load ${proxyConfigPath}: ${(e as Error).message}`);
+        console.error(`Failed to load ${resolvedProxyPath}: ${(e as Error).message}`);
         process.exit(1);
     }
 
     if (!proxyConfig.registries || !Object.keys(proxyConfig.registries).length) {
-        console.error(`No registries found in ${proxyConfigPath}`);
+        console.error(`No registries found in ${resolvedProxyPath}`);
         process.exit(1);
     }
 
     let localYarnConfig: YarnConfig = { npmRegistries: {} };
     try {
-        const localYamlContent = await readFile(localYarnConfigPath, 'utf8');
+        const localYamlContent = await readFile(resolvedLocalYarnPath, 'utf8');
         localYarnConfig = load(localYamlContent) as YarnConfig;
-        console.log(`Loaded local Yarn config from ${localYarnConfigPath}`);
+        console.log(`Loaded local Yarn config from ${resolvedLocalYarnPath}`);
     } catch (e) {
-        console.warn(`Failed to load ${localYarnConfigPath}: ${(e as Error).message}`);
+        console.warn(`Failed to load ${resolvedLocalYarnPath}: ${(e as Error).message}`);
     }
 
     let globalYarnConfig: YarnConfig = { npmRegistries: {} };
     try {
-        const globalYamlContent = await readFile(globalYarnConfigPath, 'utf8');
+        const globalYamlContent = await readFile(resolvedGlobalYarnPath, 'utf8');
         globalYarnConfig = load(globalYamlContent) as YarnConfig;
-        console.log(`Loaded global Yarn config from ${globalYarnConfigPath}`);
+        console.log(`Loaded global Yarn config from ${resolvedGlobalYarnPath}`);
     } catch (e) {
-        console.warn(`Failed to load ${globalYarnConfigPath}: ${(e as Error).message}`);
+        console.warn(`Failed to load ${resolvedGlobalYarnPath}: ${(e as Error).message}`);
     }
 
-    // 使用 Map 合并重复的 URL
     const registryMap = new Map<string, RegistryConfig | null>();
     for (const [url, regConfig] of Object.entries(proxyConfig.registries)) {
         const normalizedUrl = normalizeUrl(url);
-        registryMap.set(normalizedUrl, regConfig); // 后配置覆盖前配置
+        registryMap.set(normalizedUrl, regConfig);
     }
 
     const registries = Array.from(registryMap.entries()).map(([url, regConfig]) => {
@@ -66,7 +74,7 @@ async function loadRegistries(proxyConfigPath = './.registry-proxy.yml', localYa
         const normalizedUrl = normalizeUrl(url);
         if (!token && localYarnConfig.npmRegistries?.[normalizedUrl] && 'npmAuthToken' in localYarnConfig.npmRegistries[normalizedUrl]) {
             token = localYarnConfig.npmRegistries[normalizedUrl]!.npmAuthToken?.replace(/\${(.+)}/, (_, key) => process.env[key] || '') || localYarnConfig.npmRegistries[normalizedUrl]!.npmAuthToken;
-            console.log(`Token for ${url} not found in ${proxyConfigPath}, using local Yarn config`);
+            console.log(`Token for ${url} not found in ${resolvedProxyPath}, using local Yarn config`);
         }
 
         if (!token && globalYarnConfig.npmRegistries?.[normalizedUrl] && 'npmAuthToken' in globalYarnConfig.npmRegistries[normalizedUrl]) {
@@ -81,7 +89,7 @@ async function loadRegistries(proxyConfigPath = './.registry-proxy.yml', localYa
     return registries;
 }
 
-export async function startProxyServer(proxyConfigPath?: string, localYarnConfigPath?: string, globalYarnConfigPath?: string, port: number = 4873): Promise<Server> {
+export async function startProxyServer(proxyConfigPath?: string, localYarnConfigPath?: string, globalYarnConfigPath?: string, port: number = 0): Promise<Server> {
     console.log('Starting proxy server...');
     const registries = await loadRegistries(proxyConfigPath, localYarnConfigPath, globalYarnConfigPath);
 
@@ -122,22 +130,54 @@ export async function startProxyServer(proxyConfigPath?: string, localYarnConfig
         }
     });
 
-    server.listen(port, () => console.log(`Proxy server started at http://localhost:${port}`));
+    return new Promise((resolve, reject) => {
+        server.listen(port, () => {
+            const address: AddressInfo | string | null = server.address();
+            if (!address) {
+                console.error('Failed to get server address: address is null');
+                reject(new Error('Failed to get server address: address is null'));
+                return;
+            }
 
-    process.on('SIGTERM', () => {
-        console.log('Received SIGTERM, shutting down...');
-        server.close(() => process.exit(0));
+            if (typeof address === 'string') {
+                console.error('Server bound to a path (e.g., Unix socket), which is not supported');
+                reject(new Error('Server bound to a path, expected a TCP port'));
+                return;
+            }
+
+            // 显式声明 address 为 AddressInfo 类型
+            const addressInfo: AddressInfo = address;
+            const actualPort: number = addressInfo.port;
+            console.log(`Proxy server started at http://localhost:${actualPort}`);
+            writeFileSync('.registry-proxy-port', actualPort.toString(), 'utf8');
+            resolve(server);
+        });
+
+        process.on('SIGTERM', () => {
+            console.log('Received SIGTERM, shutting down...');
+            server.close((err) => {
+                if (err) {
+                    console.error('Error closing server:', err.message);
+                    process.exit(1);
+                }
+                console.log('Server closed.');
+                process.exit(0);
+            });
+
+            setTimeout(() => {
+                console.error('Server did not close in time, forcing exit...');
+                process.exit(1);
+            }, 5000);
+        });
     });
-
-    return server;
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
     const proxyConfigPath = process.argv[2];
     const localYarnConfigPath = process.argv[3];
     const globalYarnConfigPath = process.argv[4];
-    const port = parseInt(process.argv[5], 10) || 4873;
-    console.log(`CLI: proxyConfigPath=${proxyConfigPath || './.registry-proxy.yml'}, localYarnConfigPath=${localYarnConfigPath || './.yarnrc.yml'}, globalYarnConfigPath=${globalYarnConfigPath || join(homedir(), '.yarnrc.yml')}, port=${port}`);
+    const port = parseInt(process.argv[5], 10) || 0;
+    console.log(`CLI: proxyConfigPath=${proxyConfigPath || './.registry-proxy.yml'}, localYarnConfigPath=${localYarnConfigPath || './.yarnrc.yml'}, globalYarnConfigPath=${globalYarnConfigPath || join(homedir(), '.yarnrc.yml')}, port=${port || 'dynamic'}`);
     startProxyServer(proxyConfigPath, localYarnConfigPath, globalYarnConfigPath, port).catch(err => {
         console.error('Startup failed:', (err as Error).message);
         process.exit(1);
