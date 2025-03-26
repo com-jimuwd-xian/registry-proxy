@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createServer, Server } from 'http';
-import { AddressInfo } from 'net'; // 导入 AddressInfo 类型
+import { AddressInfo } from 'net';
 import { readFile } from 'fs/promises';
 import { load } from 'js-yaml';
 import fetch, { Response } from 'node-fetch';
@@ -71,15 +71,32 @@ async function loadRegistries(proxyConfigPath = './.registry-proxy.yml', localYa
             token = regConfig.npmAuthToken?.replace(/\${(.+)}/, (_, key) => process.env[key] || '') || regConfig.npmAuthToken;
         }
 
+        // 使用 normalizeUrl 和 normalizeUrl + "/" 查找 token
         const normalizedUrl = normalizeUrl(url);
-        if (!token && localYarnConfig.npmRegistries?.[normalizedUrl] && 'npmAuthToken' in localYarnConfig.npmRegistries[normalizedUrl]) {
-            token = localYarnConfig.npmRegistries[normalizedUrl]!.npmAuthToken?.replace(/\${(.+)}/, (_, key) => process.env[key] || '') || localYarnConfig.npmRegistries[normalizedUrl]!.npmAuthToken;
-            console.log(`Token for ${url} not found in ${resolvedProxyPath}, using local Yarn config`);
+        const urlWithSlash = normalizedUrl + '/';
+
+        if (!token) {
+            // 检查本地 Yarn 配置
+            const localConfig = localYarnConfig.npmRegistries;
+            if (localConfig?.[normalizedUrl] && 'npmAuthToken' in localConfig[normalizedUrl]) {
+                token = localConfig[normalizedUrl]!.npmAuthToken?.replace(/\${(.+)}/, (_, key) => process.env[key] || '') || localConfig[normalizedUrl]!.npmAuthToken;
+                console.log(`Token for ${url} not found in ${resolvedProxyPath}, using local Yarn config (normalized)`);
+            } else if (localConfig?.[urlWithSlash] && 'npmAuthToken' in localConfig[urlWithSlash]) {
+                token = localConfig[urlWithSlash]!.npmAuthToken?.replace(/\${(.+)}/, (_, key) => process.env[key] || '') || localConfig[urlWithSlash]!.npmAuthToken;
+                console.log(`Token for ${url} not found in ${resolvedProxyPath}, using local Yarn config (with slash)`);
+            }
         }
 
-        if (!token && globalYarnConfig.npmRegistries?.[normalizedUrl] && 'npmAuthToken' in globalYarnConfig.npmRegistries[normalizedUrl]) {
-            token = globalYarnConfig.npmRegistries[normalizedUrl]!.npmAuthToken?.replace(/\${(.+)}/, (_, key) => process.env[key] || '') || globalYarnConfig.npmRegistries[normalizedUrl]!.npmAuthToken;
-            console.log(`Token for ${url} not found in local Yarn config, using global Yarn config`);
+        if (!token) {
+            // 检查全局 Yarn 配置
+            const globalConfig = globalYarnConfig.npmRegistries;
+            if (globalConfig?.[normalizedUrl] && 'npmAuthToken' in globalConfig[normalizedUrl]) {
+                token = globalConfig[normalizedUrl]!.npmAuthToken?.replace(/\${(.+)}/, (_, key) => process.env[key] || '') || globalConfig[normalizedUrl]!.npmAuthToken;
+                console.log(`Token for ${url} not found in local Yarn config, using global Yarn config (normalized)`);
+            } else if (globalConfig?.[urlWithSlash] && 'npmAuthToken' in globalConfig[urlWithSlash]) {
+                token = globalConfig[urlWithSlash]!.npmAuthToken?.replace(/\${(.+)}/, (_, key) => process.env[key] || '') || globalConfig[urlWithSlash]!.npmAuthToken;
+                console.log(`Token for ${url} not found in local Yarn config, using global Yarn config (with slash)`);
+            }
         }
 
         console.log(`Registry ${url}: token=${token ? 'present' : 'missing'}`);
@@ -148,7 +165,6 @@ export async function startProxyServer(proxyConfigPath?: string, localYarnConfig
             const addressInfo: AddressInfo = address;
             const actualPort: number = addressInfo.port;
 
-            // 从环境变量获取项目根目录，写入端口文件
             const projectRoot = process.env.PROJECT_ROOT || process.cwd();
             const portFilePath = join(projectRoot, '.registry-proxy-port');
             console.log(`Proxy server started at http://localhost:${actualPort}`);
