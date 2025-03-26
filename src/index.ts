@@ -71,30 +71,27 @@ async function loadRegistries(proxyConfigPath = './.registry-proxy.yml', localYa
             token = regConfig.npmAuthToken?.replace(/\${(.+)}/, (_, key) => process.env[key] || '') || regConfig.npmAuthToken;
         }
 
-        // 使用 normalizeUrl 和 normalizeUrl + "/" 查找 token
         const normalizedUrl = normalizeUrl(url);
         const urlWithSlash = normalizedUrl + '/';
 
         if (!token) {
-            // 检查本地 Yarn 配置
             const localConfig = localYarnConfig.npmRegistries;
-            if (localConfig?.[normalizedUrl] && 'npmAuthToken' in localConfig[normalizedUrl]) {
-                token = localConfig[normalizedUrl]!.npmAuthToken?.replace(/\${(.+)}/, (_, key) => process.env[key] || '') || localConfig[normalizedUrl]!.npmAuthToken;
+            if (localConfig?.[normalizedUrl]?.npmAuthToken) {
+                token = localConfig[normalizedUrl].npmAuthToken.replace(/\${(.+)}/, (_, key) => process.env[key] || '') || localConfig[normalizedUrl].npmAuthToken;
                 console.log(`Token for ${url} not found in ${resolvedProxyPath}, using local Yarn config (normalized)`);
-            } else if (localConfig?.[urlWithSlash] && 'npmAuthToken' in localConfig[urlWithSlash]) {
-                token = localConfig[urlWithSlash]!.npmAuthToken?.replace(/\${(.+)}/, (_, key) => process.env[key] || '') || localConfig[urlWithSlash]!.npmAuthToken;
+            } else if (localConfig?.[urlWithSlash]?.npmAuthToken) {
+                token = localConfig[urlWithSlash].npmAuthToken.replace(/\${(.+)}/, (_, key) => process.env[key] || '') || localConfig[urlWithSlash].npmAuthToken;
                 console.log(`Token for ${url} not found in ${resolvedProxyPath}, using local Yarn config (with slash)`);
             }
         }
 
         if (!token) {
-            // 检查全局 Yarn 配置
             const globalConfig = globalYarnConfig.npmRegistries;
-            if (globalConfig?.[normalizedUrl] && 'npmAuthToken' in globalConfig[normalizedUrl]) {
-                token = globalConfig[normalizedUrl]!.npmAuthToken?.replace(/\${(.+)}/, (_, key) => process.env[key] || '') || globalConfig[normalizedUrl]!.npmAuthToken;
+            if (globalConfig?.[normalizedUrl]?.npmAuthToken) {
+                token = globalConfig[normalizedUrl].npmAuthToken.replace(/\${(.+)}/, (_, key) => process.env[key] || '') || globalConfig[normalizedUrl].npmAuthToken;
                 console.log(`Token for ${url} not found in local Yarn config, using global Yarn config (normalized)`);
-            } else if (globalConfig?.[urlWithSlash] && 'npmAuthToken' in globalConfig[urlWithSlash]) {
-                token = globalConfig[urlWithSlash]!.npmAuthToken?.replace(/\${(.+)}/, (_, key) => process.env[key] || '') || globalConfig[urlWithSlash]!.npmAuthToken;
+            } else if (globalConfig?.[urlWithSlash]?.npmAuthToken) {
+                token = globalConfig[urlWithSlash].npmAuthToken.replace(/\${(.+)}/, (_, key) => process.env[key] || '') || globalConfig[urlWithSlash].npmAuthToken;
                 console.log(`Token for ${url} not found in local Yarn config, using global Yarn config (with slash)`);
             }
         }
@@ -109,6 +106,9 @@ async function loadRegistries(proxyConfigPath = './.registry-proxy.yml', localYa
 export async function startProxyServer(proxyConfigPath?: string, localYarnConfigPath?: string, globalYarnConfigPath?: string, port: number = 0): Promise<Server> {
     console.log('Starting proxy server...');
     const registries = await loadRegistries(proxyConfigPath, localYarnConfigPath, globalYarnConfigPath);
+    registries.forEach(({ url, token }) => {
+        console.log(`Registry: ${url}, Token: ${token ? 'present' : 'missing'}`);
+    });
 
     const server = createServer(async (req, res) => {
         if (!req.url || req.method !== 'GET') {
@@ -121,10 +121,12 @@ export async function startProxyServer(proxyConfigPath?: string, localYarnConfig
 
         const fetchPromises = registries.map(async ({ url: registry, token }) => {
             const targetUrl = `${registry}${pathname}`;
+            console.log(`Fetching ${targetUrl} with token: ${token ? 'present' : 'none'}`);
             try {
                 const response = await fetch(targetUrl, {
                     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
                 });
+                console.log(`Response from ${targetUrl}: ${response.status}`);
                 if (response.ok) return response;
                 throw new Error(`Failed: ${response.status}`);
             } catch (e) {
