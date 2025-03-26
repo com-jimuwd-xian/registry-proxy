@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createServer, Server } from 'http';
-import { AddressInfo } from 'net';
+import { AddressInfo } from 'net'; // 导入 AddressInfo 类型
 import { readFile } from 'fs/promises';
 import { load } from 'js-yaml';
 import fetch, { Response } from 'node-fetch';
@@ -145,11 +145,14 @@ export async function startProxyServer(proxyConfigPath?: string, localYarnConfig
                 return;
             }
 
-            // 显式声明 address 为 AddressInfo 类型
             const addressInfo: AddressInfo = address;
             const actualPort: number = addressInfo.port;
+
+            // 从环境变量获取项目根目录，写入端口文件
+            const projectRoot = process.env.PROJECT_ROOT || process.cwd();
+            const portFilePath = join(projectRoot, '.registry-proxy-port');
             console.log(`Proxy server started at http://localhost:${actualPort}`);
-            writeFileSync('.registry-proxy-port', actualPort.toString(), 'utf8');
+            writeFileSync(portFilePath, actualPort.toString(), 'utf8');
             resolve(server);
         });
 
