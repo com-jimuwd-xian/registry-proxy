@@ -1,13 +1,13 @@
 #!/usr/bin/env node
-import { createServer, Server as HttpServer } from 'http';
-import { createServer as createHttpsServer, Server as HttpsServer } from 'https';
-import { readFileSync, promises as fsPromises } from 'fs';
-import { AddressInfo } from 'net';
-import { load } from 'js-yaml';
-import fetch, { Response } from 'node-fetch';
-import { homedir } from 'os';
-import { join, resolve } from 'path';
-import { URL } from 'url';
+import {createServer, Server as HttpServer} from 'http';
+import {createServer as createHttpsServer, Server as HttpsServer} from 'https';
+import {promises as fsPromises, readFileSync} from 'fs';
+import {AddressInfo} from 'net';
+import {load} from 'js-yaml';
+import fetch, {Response} from 'node-fetch';
+import {homedir} from 'os';
+import {join, resolve} from 'path';
+import {URL} from 'url';
 
 const { readFile, writeFile } = fsPromises;
 
@@ -59,25 +59,31 @@ const limiter = new ConcurrencyLimiter(5); // 限制为 5 个并发请求
 function normalizeUrl(url: string): string {
     try {
         const urlObj = new URL(url);
+        // 规范化端口
         if (urlObj.protocol === 'http:' && (urlObj.port === '80' || urlObj.port === '')) {
             urlObj.port = '';
         } else if (urlObj.protocol === 'https:' && (urlObj.port === '443' || urlObj.port === '')) {
             urlObj.port = '';
         }
-        if (!urlObj.pathname.endsWith('/')) {
+        // 处理路径末尾斜杠
+        const pathname = urlObj.pathname;
+        if (pathname.endsWith('.tgz') || pathname.endsWith('.tgz/')) {
+            // tarball 文件，去除末尾斜杠
+            urlObj.pathname = pathname.replace(/\/+$/, '');
+        } else if (!pathname.endsWith('/')) {
+            // 注册表根路径，确保末尾有斜杠
             urlObj.pathname += '/';
         }
         console.debug(`Normalized URL: ${url} -> ${urlObj.toString()}`);
         return urlObj.toString();
     } catch (e) {
         console.error(`Invalid URL: ${url}`, e);
-        return url.endsWith('/') ? url : `${url}/`;
+        return url.endsWith('/') ? url.slice(0, -1) : url; // 默认去除末尾斜杠
     }
 }
 
 function resolvePath(path: string): string {
-    const resolved = path.startsWith('~/') ? join(homedir(), path.slice(2)) : resolve(path);
-    return resolved;
+    return path.startsWith('~/') ? join(homedir(), path.slice(2)) : resolve(path);
 }
 
 function removeRegistryPrefix(tarballUrl: string, registries: RegistryInfo[]): string {
