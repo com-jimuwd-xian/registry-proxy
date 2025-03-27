@@ -1,6 +1,6 @@
 {
   "name": "com.jimuwd.xian.registry-proxy",
-  "version": "1.0.17",
+  "version": "1.0.18",
   "type": "module",
   "description": "A lightweight npm registry proxy with fallback support",
   "main": "dist/index.js",
