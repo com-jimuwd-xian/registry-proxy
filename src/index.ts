@@ -21,6 +21,7 @@ function resolvePath(path: string): string {
 }
 
 async function loadRegistries(proxyConfigPath = './.registry-proxy.yml', localYarnConfigPath = './.yarnrc.yml', globalYarnConfigPath = join(homedir(), '.yarnrc.yml')): Promise<{ url: string; token?: string }[]> {
+    // 原有逻辑保持不变
     const resolvedProxyPath = resolvePath(proxyConfigPath);
     const resolvedLocalYarnPath = resolvePath(localYarnConfigPath);
     const resolvedGlobalYarnPath = resolvePath(globalYarnConfigPath);
@@ -119,13 +120,13 @@ export async function startProxyServer(proxyConfigPath?: string, localYarnConfig
         }
 
         const fullUrl = new URL(req.url, `http://${req.headers.host}`);
-        console.log(`Received request: ${fullUrl.pathname} (Full URL: ${fullUrl.href})`); // 增强日志
+        console.log(`Received request: ${fullUrl.pathname} (Full URL: ${fullUrl.href})`);
         const pathname = fullUrl.pathname;
 
         const fetchPromises = registries.map(async ({ url: registry, token }) => {
             const targetUrl = `${registry}${pathname}`;
             const headers: Record<string, string> | undefined = token ? { Authorization: `Bearer ${token}` } : undefined;
-            console.log(`Fetching ${targetUrl} with headers:`, JSON.stringify(headers, null, 2)); // 打印完整 headers
+            console.log(`Fetching ${targetUrl} with headers:`, JSON.stringify(headers, null, 2));
             try {
                 const response = await fetch(targetUrl, { headers });
                 console.log(`Response from ${targetUrl}: ${response.status} ${response.statusText}`);
@@ -145,10 +146,38 @@ export async function startProxyServer(proxyConfigPath?: string, localYarnConfig
 
         if (successResponse) {
             console.log(`Forwarding successful response from ${successResponse.url}: ${successResponse.status} ${successResponse.statusText}`);
-            res.writeHead(successResponse.status, {
-                'Content-Type': successResponse.headers.get('Content-Type') || 'application/octet-stream',
-            });
-            successResponse.body?.pipe(res);
+            const contentType = successResponse.headers.get('Content-Type') || 'application/octet-stream';
+
+            // 检查是否为元数据（JSON 格式）
+            if (contentType.includes('application/json')) {
+                const jsonData:any = await successResponse.json();
+                const proxyBaseUrl = `http://localhost:${(server.address() as AddressInfo).port}`;
+
+                // 修改 tarball 地址
+                if (jsonData.versions) {
+                    for (const version in jsonData.versions) {
+                        const dist = jsonData.versions[version].dist;
+                        if (dist && dist.tarball) {
+                            const originalTarball = dist.tarball;
+                            // 将 tarball 地址替换为代理地址
+                            const tarballPath = new URL(originalTarball).pathname; // 提取路径部分
+                            dist.tarball = `${proxyBaseUrl}${tarballPath}`;
+                            console.log(`Rewrote tarball URL from ${originalTarball} to ${dist.tarball}`);
+                        }
+                    }
+                }
+
+                // 返回修改后的 JSON
+                res.writeHead(successResponse.status, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify(jsonData));
+            } else {
+                // 非 JSON 响应（例如 tarball 文件），直接转发
+                res.writeHead(successResponse.status, {
+                    'Content-Type': contentType,
+                    'Content-Length': successResponse.headers.get('Content-Length') || undefined,
+                });
+                successResponse.body?.pipe(res);
+            }
         } else {
             console.log('No successful response found, returning 404');
             res.writeHead(404, { 'Content-Type': 'text/plain' });
