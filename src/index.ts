@@ -157,10 +157,10 @@ export async function startProxyServer(
 ): Promise<HttpServer | HttpsServer> {
     const proxyConfig = await loadProxyConfig(proxyConfigPath);
     const registries = await loadRegistries(proxyConfigPath, localYarnConfigPath, globalYarnConfigPath);
-    const basePath = proxyConfig.basePath ? `/${proxyConfig.basePath.replace(/^\/|\/$/g, '')}` : '';
+    const basePathPrefixedWithSlash = proxyConfig.basePath ? `/${proxyConfig.basePath.replace(/^\/|\/$/g, '')}` : '/';
 
     console.log('Active registries:', registries.map(r => r.url));
-    console.log('Proxy base path:', basePath || '/');
+    console.log('Proxy base path:', basePathPrefixedWithSlash);
     console.log('HTTPS:', !!proxyConfig.https);
 
     let proxyPort: number;
@@ -173,21 +173,21 @@ export async function startProxyServer(
         }
 
         const fullUrl = new URL(req.url, `${proxyConfig.https ? 'https' : 'http'}://${req.headers.host}`);
-        if (basePath && !fullUrl.pathname.startsWith(basePath)) {
-            console.error(`Path ${fullUrl.pathname} does not match basePath ${basePath}`);
+        if (basePathPrefixedWithSlash && !fullUrl.pathname.startsWith(basePathPrefixedWithSlash)) {
+            console.error(`Path ${fullUrl.pathname} does not match basePath ${basePathPrefixedWithSlash}`);
             res.writeHead(404).end('Not Found');
             return;
         }
 
-        const relativePath = basePath
-            ? fullUrl.pathname.slice(basePath.length)
+        const relativePathPrefixedWithSlash = basePathPrefixedWithSlash
+            ? fullUrl.pathname.slice(basePathPrefixedWithSlash.length)
             : fullUrl.pathname;
-        console.log(`Proxying: ${relativePath}`);
+        console.log(`Proxying: ${relativePathPrefixedWithSlash}`);
 
         const fetchPromises = registries.map(async ({ url, token }) => {
             await limiter.acquire();
             try {
-                const cleanRelativePath = relativePath.replace(/^\/+|\/+$/g, '');
+                const cleanRelativePath = relativePathPrefixedWithSlash.replace(/^\/+|\/+$/g, '');
                 const targetUrl = `${url}/${cleanRelativePath}${fullUrl.search || ''}`;
                 console.log(`Fetching from: ${targetUrl}`);
                 const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
@@ -205,7 +205,7 @@ export async function startProxyServer(
         const responses = await Promise.all(fetchPromises);
         const successResponse = responses.find((r): r is Response => r !== null);
         if (!successResponse) {
-            console.error(`All registries failed for ${relativePath}`);
+            console.error(`All registries failed for ${relativePathPrefixedWithSlash}`);
             res.writeHead(404).end('Not Found - All upstream registries failed');
             return;
         }
@@ -215,7 +215,7 @@ export async function startProxyServer(
             try {
                 const data = await successResponse.json() as PackageData;
                 if (data.versions) {
-                    const proxyBase = `${proxyConfig.https ? 'https' : 'http'}://${req.headers.host || 'localhost:' + proxyPort}${basePath}`;
+                    const proxyBase = `${proxyConfig.https ? 'https' : 'http'}://${req.headers.host || 'localhost:' + proxyPort}${basePathPrefixedWithSlash}`;
                     for (const version in data.versions) {
                         const dist = data.versions[version]?.dist;
                         if (dist?.tarball) {
@@ -244,7 +244,7 @@ export async function startProxyServer(
             };
             res.writeHead(successResponse.status, safeHeaders);
             successResponse.body.pipe(res).on('error', (err:any) => {
-                console.error(`Stream error for ${relativePath}:`, err);
+                console.error(`Stream error for ${relativePathPrefixedWithSlash}:`, err);
                 res.writeHead(502).end('Stream Error');
             });
         }
@@ -285,7 +285,7 @@ export async function startProxyServer(
             proxyPort = address.port;
             const portFile = join(process.env.PROJECT_ROOT || process.cwd(), '.registry-proxy-port');
             writeFile(portFile, proxyPort.toString()).catch(e => console.error('Failed to write port file:', e));
-            console.log(`Proxy server running on ${proxyConfig.https ? 'https' : 'http'}://localhost:${proxyPort}${basePath}`);
+            console.log(`Proxy server running on ${proxyConfig.https ? 'https' : 'http'}://localhost:${proxyPort}${basePathPrefixedWithSlash}`);
             resolve(server);
         });
     });
