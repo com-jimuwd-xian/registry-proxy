@@ -188,11 +188,11 @@ export async function startProxyServer(
             await limiter.acquire();
             try {
                 const cleanRelativePath = relativePath.replace(/^\/+|\/+$/g, '');
-                const targetUrl = `${url}/${cleanRelativePath}${fullUrl.search || ''}`.replace(/\/+/g, '/');
+                const targetUrl = `${url}/${cleanRelativePath}${fullUrl.search || ''}`;
                 console.log(`Fetching from: ${targetUrl}`);
                 const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
                 const response = await fetch(targetUrl, { headers, });
-                console.log(`Response from ${url}: ${response.status} ${response.statusText}`);
+                console.log(`Response from ${targetUrl}: ${response.status} ${response.statusText}`);
                 return response.ok ? response : null;
             } catch (e) {
                 console.error(`Failed to fetch from ${url}:`, e);
