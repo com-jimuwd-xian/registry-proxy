@@ -44,10 +44,11 @@ function removeRegistryPrefix(tarballUrl: string, registries: RegistryInfo[]): s
         for (const { url, urlObj } of normalizedRegistries) {
             if (
                 tarballObj.protocol === urlObj.protocol &&
+                // 这样匹配是否兼容http://host:80/pathname与http://host/pathname这种边际情况？
                 tarballObj.host === urlObj.host &&
                 tarballObj.pathname.startsWith(urlObj.pathname)
             ) {
-                return tarballUrl.slice(url.length - 1);
+                return tarballUrl.slice(url.length - 1); // 这样是否兼容http://host:80/pathname与http://host/pathname这种边际情况？
             }
         }
     } catch (e) {
