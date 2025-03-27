@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { createServer, Server as HttpServer } from 'http';
+import {createServer, Server as HttpServer, IncomingMessage, ServerResponse, OutgoingHttpHeaders} from 'http';
 import { createServer as createHttpsServer, Server as HttpsServer } from 'https';
 import { readFileSync, promises as fsPromises } from 'fs';
 import { AddressInfo } from 'net';
@@ -165,7 +165,7 @@ export async function startProxyServer(
 
     let proxyPort: number;
 
-    const requestHandler = async (req: any, res: any) => {
+    const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
         if (!req.url || !req.headers.host) {
             console.error('Invalid request: missing URL or host header');
             res.writeHead(400).end('Invalid Request');
@@ -238,8 +238,8 @@ export async function startProxyServer(
                 return;
             }
             const contentLength = successResponse.headers.get('Content-Length');
-            const safeHeaders = {
-                'Content-Type': successResponse.headers.get('Content-Type'),
+            const safeHeaders:OutgoingHttpHeaders = {
+                'Content-Type': successResponse.headers.get('Content-Type')||undefined,
                 'Content-Length': contentLength && !isNaN(Number(contentLength)) ? contentLength : undefined,
             };
             res.writeHead(successResponse.status, safeHeaders);
