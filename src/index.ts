@@ -144,7 +144,6 @@ export async function startProxyServer(
             return;
         }
 
-        // Handle base path
         const fullUrl = new URL(req.url, `${proxyConfig.https ? 'https' : 'http'}://${req.headers.host}`);
         if (basePath && !fullUrl.pathname.startsWith(basePath)) {
             res.writeHead(404).end('Not Found');
@@ -154,15 +153,17 @@ export async function startProxyServer(
         const relativePath = basePath
             ? fullUrl.pathname.slice(basePath.length)
             : fullUrl.pathname;
-
         console.log(`Proxying: ${relativePath}`);
 
         const responses = await Promise.all(
             registries.map(async ({ url, token }) => {
                 try {
-                    const targetUrl = `${url}${relativePath}${fullUrl.search || ''}`;
+                    const cleanRelativePath = relativePath.replace(/\/+$/, '');
+                    const targetUrl = `${url}${cleanRelativePath}${fullUrl.search || ''}`;
+                    console.log(`Fetching from: ${targetUrl}`);
                     const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
                     const response = await fetch(targetUrl, { headers });
+                    console.log(`Response from ${url}: ${response.status} ${response.statusText}`);
                     return response.ok ? response : null;
                 } catch (e) {
                     console.error(`Failed to fetch from ${url}:`, e);
@@ -173,7 +174,8 @@ export async function startProxyServer(
 
         const successResponse = responses.find((r): r is Response => r !== null);
         if (!successResponse) {
-            res.writeHead(404).end('Not Found');
+            console.error(`All registries failed for ${relativePath}`);
+            res.writeHead(404).end('Not Found - All upstream registries failed');
             return;
         }
 
