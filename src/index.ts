@@ -112,23 +112,28 @@ export async function startProxyServer(proxyConfigPath?: string, localYarnConfig
 
     const server = createServer(async (req, res) => {
         if (!req.url || req.method !== 'GET') {
-            res.writeHead(400);
+            console.log(`Invalid request: URL=${req.url}, Method=${req.method}`);
+            res.writeHead(400, { 'Content-Type': 'text/plain' });
             res.end('Bad Request');
             return;
         }
 
-        const pathname = new URL(req.url, `http://${req.headers.host}`).pathname;
+        const fullUrl = new URL(req.url, `http://${req.headers.host}`);
+        console.log(`Received request: ${fullUrl.pathname} (Full URL: ${fullUrl.href})`); // 增强日志
+        const pathname = fullUrl.pathname;
 
         const fetchPromises = registries.map(async ({ url: registry, token }) => {
             const targetUrl = `${registry}${pathname}`;
-            console.log(`Fetching ${targetUrl} with token: ${token ? 'present' : 'none'}`);
+            const headers: Record<string, string> | undefined = token ? { Authorization: `Bearer ${token}` } : undefined;
+            console.log(`Fetching ${targetUrl} with headers:`, JSON.stringify(headers, null, 2)); // 打印完整 headers
             try {
-                const response = await fetch(targetUrl, {
-                    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-                });
-                console.log(`Response from ${targetUrl}: ${response.status}`);
-                if (response.ok) return response;
-                throw new Error(`Failed: ${response.status}`);
+                const response = await fetch(targetUrl, { headers });
+                console.log(`Response from ${targetUrl}: ${response.status} ${response.statusText}`);
+                if (!response.ok) {
+                    const errorBody = await response.text();
+                    console.log(`Error body from ${targetUrl}: ${errorBody}`);
+                }
+                return response;
             } catch (e) {
                 console.error(`Fetch failed for ${targetUrl}: ${(e as Error).message}`);
                 return null;
@@ -136,15 +141,17 @@ export async function startProxyServer(proxyConfigPath?: string, localYarnConfig
         });
 
         const responses = await Promise.all(fetchPromises);
-        const successResponse = responses.find((r: Response | null) => r !== null);
+        const successResponse = responses.find((r: Response | null) => r?.ok);
 
         if (successResponse) {
+            console.log(`Forwarding successful response from ${successResponse.url}: ${successResponse.status} ${successResponse.statusText}`);
             res.writeHead(successResponse.status, {
                 'Content-Type': successResponse.headers.get('Content-Type') || 'application/octet-stream',
             });
             successResponse.body?.pipe(res);
         } else {
-            res.writeHead(404);
+            console.log('No successful response found, returning 404');
+            res.writeHead(404, { 'Content-Type': 'text/plain' });
             res.end('Package not found');
         }
     });
