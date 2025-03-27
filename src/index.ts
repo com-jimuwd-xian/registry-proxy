@@ -176,7 +176,9 @@ export async function startProxyServer(
                     for (const version in data.versions) {
                         const dist = data.versions[version]?.dist;
                         if (dist?.tarball) {
-                            dist.tarball = `${proxyBase}${removeRegistryPrefix(dist.tarball, registries)}`;
+                            const originalUrl = new URL(dist.tarball);
+                            const tarballPath = removeRegistryPrefix(dist.tarball, registries);
+                            dist.tarball = `${proxyBase}${tarballPath}${originalUrl.search || ''}`;
                         }
                     }
                 }
