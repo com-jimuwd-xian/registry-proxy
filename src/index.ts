@@ -206,9 +206,17 @@ export async function startProxyServer(
 
     let server: HttpServer | HttpsServer;
     if (proxyConfig.https) {
+        const { key, cert } = proxyConfig.https;
+        try {
+            await fsPromises.access(resolvePath(key));
+            await fsPromises.access(resolvePath(cert));
+        } catch (e) {
+            console.error(`HTTPS config error: key or cert file not found`, e);
+            process.exit(1);
+        }
         const httpsOptions = {
-            key: readFileSync(resolvePath(proxyConfig.https.key)),
-            cert: readFileSync(resolvePath(proxyConfig.https.cert))
+            key: readFileSync(resolvePath(key)),
+            cert: readFileSync(resolvePath(cert)),
         };
         server = createHttpsServer(httpsOptions, requestHandler);
     } else {
