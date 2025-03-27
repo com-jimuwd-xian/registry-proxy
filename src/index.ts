@@ -24,7 +24,21 @@ interface PackageVersion { dist?: { tarball?: string }; }
 interface PackageData { versions?: Record<string, PackageVersion>; }
 
 function normalizeUrl(url: string): string {
-    return url.endsWith('/') ? url : `${url}/`;
+    try {
+        const urlObj = new URL(url);
+        if (urlObj.protocol === 'http:' && (urlObj.port === '80' || urlObj.port === '')) {
+            urlObj.port = '';
+        } else if (urlObj.protocol === 'https:' && (urlObj.port === '443' || urlObj.port === '')) {
+            urlObj.port = '';
+        }
+        if (!urlObj.pathname.endsWith('/')) {
+            urlObj.pathname += '/';
+        }
+        return urlObj.toString();
+    } catch (e) {
+        console.error(`Invalid URL: ${url}`, e);
+        return url.endsWith('/') ? url : `${url}/`;
+    }
 }
 
 function resolvePath(path: string): string {
@@ -33,22 +47,14 @@ function resolvePath(path: string): string {
 
 function removeRegistryPrefix(tarballUrl: string, registries: RegistryInfo[]): string {
     try {
-        const tarballObj = new URL(tarballUrl);
+        const normalizedTarball = normalizeUrl(tarballUrl);
         const normalizedRegistries = registries
-            .map(r => ({
-                url: normalizeUrl(r.url),
-                urlObj: new URL(r.url)
-            }))
-            .sort((a, b) => b.url.length - a.url.length);
+            .map(r => normalizeUrl(r.url))
+            .sort((a, b) => b.length - a.length);
 
-        for (const { url, urlObj } of normalizedRegistries) {
-            if (
-                tarballObj.protocol === urlObj.protocol &&
-                // 这样匹配是否兼容http://host:80/pathname与http://host/pathname这种边际情况？
-                tarballObj.host === urlObj.host &&
-                tarballObj.pathname.startsWith(urlObj.pathname)
-            ) {
-                return tarballUrl.slice(url.length - 1); // 这样是否兼容http://host:80/pathname与http://host/pathname这种边际情况？
+        for (const registry of normalizedRegistries) {
+            if (normalizedTarball.startsWith(registry)) {
+                return normalizedTarball.slice(registry.length - 1) || '/';
             }
         }
     } catch (e) {
@@ -95,9 +101,10 @@ async function loadRegistries(
         loadYarnConfig(globalYarnConfigPath)
     ]);
 
-    return Object.entries(proxyConfig.registries).map(([url, regConfig]) => {
-        let token = regConfig?.npmAuthToken;
+    const registryMap = new Map<string, RegistryInfo>();
+    for (const [url, regConfig] of Object.entries(proxyConfig.registries)) {
         const normalizedUrl = normalizeUrl(url);
+        let token = regConfig?.npmAuthToken;
 
         if (!token) {
             const yarnConfigs = [localYarnConfig, globalYarnConfig];
@@ -110,9 +117,9 @@ async function loadRegistries(
                 }
             }
         }
-
-        return { url: normalizedUrl, token };
-    });
+        registryMap.set(normalizedUrl, { url: normalizedUrl, token });
+    }
+    return Array.from(registryMap.values());
 }
 
 export async function startProxyServer(
