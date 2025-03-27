@@ -238,7 +238,6 @@ export async function startProxyServer(
         if (contentType.includes('application/json')) {
             try {
                 const data = await successResponse.json() as PackageData;
-                console.debug('JSON response data:', JSON.stringify(data, null, 2));
                 if (data.versions) {
                     const proxyBase = `${proxyConfig.https ? 'https' : 'http'}://${req.headers.host || 'localhost:' + proxyPort}${basePath}`;
                     console.debug(`Rewriting tarball URLs with proxy base: ${proxyBase}`);
@@ -254,7 +253,6 @@ export async function startProxyServer(
                 }
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 const jsonResponse = JSON.stringify(data);
-                console.debug(`Sending JSON response: ${jsonResponse}`);
                 res.end(jsonResponse);
             } catch (e) {
                 console.error('Failed to parse JSON response:', e);
@@ -324,7 +322,7 @@ export async function startProxyServer(
 
 if (import.meta.url === `file://${process.argv[1]}`) {
     const [,, configPath, localYarnPath, globalYarnPath, port] = process.argv;
-    console.debug(`Starting server with args: configPath=${configPath}, localYarnPath=${localYarnPath}, globalYarnPath=${globalYarnPath}, port=${port}`);
+    console.log(`Starting server with args: configPath=${configPath}, localYarnPath=${localYarnPath}, globalYarnPath=${globalYarnPath}, port=${port}`);
     startProxyServer(
         configPath,
         localYarnPath,
