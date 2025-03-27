@@ -83,7 +83,7 @@ function removeRegistryPrefix(tarballUrl: string, registries: RegistryInfo[]): s
 
         for (const normalizedRegistry of normalizedRegistries) {
             if (normalizedTarball.startsWith(normalizedRegistry)) {
-                return normalizedTarball.slice(normalizedRegistry.length);
+                return normalizedTarball.slice(normalizedRegistry.length) || '/';
             }
         }
     } catch (e) {
