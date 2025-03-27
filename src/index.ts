@@ -77,7 +77,6 @@ function normalizeUrl(url: string): string {
 
 function resolvePath(path: string): string {
     const resolved = path.startsWith('~/') ? join(homedir(), path.slice(2)) : resolve(path);
-    console.debug(`Resolved path: ${path} -> ${resolved}`);
     return resolved;
 }
 
@@ -215,7 +214,6 @@ export async function startProxyServer(
                 const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
                 const response = await fetch(targetUrl, { headers });
                 console.log(`Response from ${url}: ${response.status} ${response.statusText}`);
-                console.debug(`Response headers from ${url}:`, Object.fromEntries(response.headers.entries()));
                 return response.ok ? response : null;
             } catch (e) {
                 console.error(`Failed to fetch from ${url}:`, e);
@@ -234,7 +232,6 @@ export async function startProxyServer(
         }
 
         const contentType = successResponse.headers.get('Content-Type') || 'application/octet-stream';
-        console.debug(`Content-Type: ${contentType}`);
         if (contentType.includes('application/json')) {
             try {
                 const data = await successResponse.json() as PackageData;
@@ -268,7 +265,6 @@ export async function startProxyServer(
                 'Content-Type': successResponse.headers.get('Content-Type'),
                 'Content-Length': successResponse.headers.get('Content-Length'),
             };
-            console.debug(`Streaming response with headers:`, safeHeaders);
             res.writeHead(successResponse.status, safeHeaders);
             successResponse.body.pipe(res).on('error', (err:any) => {
                 console.error(`Stream error for ${relativePath}:`, err);
@@ -282,7 +278,6 @@ export async function startProxyServer(
         const { key, cert } = proxyConfig.https;
         const keyPath = resolvePath(key);
         const certPath = resolvePath(cert);
-        console.debug(`Loading HTTPS key: ${keyPath}, cert: ${certPath}`);
         try {
             await fsPromises.access(keyPath);
             await fsPromises.access(certPath);
