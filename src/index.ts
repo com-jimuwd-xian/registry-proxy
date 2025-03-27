@@ -215,13 +215,15 @@ export async function startProxyServer(
             try {
                 const data = await successResponse.json() as PackageData;
                 if (data.versions) {
-                    const proxyBase = `${proxyConfig.https ? 'https' : 'http'}://${req.headers.host || 'localhost:' + proxyPort}${basePathPrefixedWithSlash}`;
+                    console.log("Requested url is", req.url);
+                    const proxyBaseUrlNoSuffixedWithSlash = `${proxyConfig.https ? 'https' : 'http'}://${req.headers.host || 'localhost:' + proxyPort}${basePathPrefixedWithSlash==='/'?'':basePathPrefixedWithSlash}`;
                     for (const version in data.versions) {
                         const dist = data.versions[version]?.dist;
                         if (dist?.tarball) {
                             const originalUrl = new URL(dist.tarball);
-                            const tarballPath = removeRegistryPrefix(dist.tarball, registries);
-                            dist.tarball = `${proxyBase}${tarballPath}${originalUrl.search || ''}`;
+                            const originalSearchParamsStr = originalUrl.search || '';
+                            const tarballPathPrefixedWithSlash = removeRegistryPrefix(dist.tarball, registries);
+                            dist.tarball = `${proxyBaseUrlNoSuffixedWithSlash}${tarballPathPrefixedWithSlash}${originalSearchParamsStr}`;
                         }
                     }
                 }
