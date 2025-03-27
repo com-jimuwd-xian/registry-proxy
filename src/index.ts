@@ -7,7 +7,7 @@ import { load } from 'js-yaml';
 import fetch, { Response } from 'node-fetch';
 import { homedir } from 'os';
 import { join, resolve } from 'path';
-import { URL } from 'url'; // 显式导入URL
+import { URL } from 'url';
 
 const { readFile, writeFile } = fsPromises;
 
@@ -23,6 +23,39 @@ interface RegistryInfo { url: string; token?: string; }
 interface PackageVersion { dist?: { tarball?: string }; }
 interface PackageData { versions?: Record<string, PackageVersion>; }
 
+// 并发控制队列
+class ConcurrencyLimiter {
+    private maxConcurrency: number;
+    private current: number = 0;
+    private queue: Array<() => void> = [];
+
+    constructor(maxConcurrency: number) {
+        this.maxConcurrency = maxConcurrency;
+    }
+
+    async acquire(): Promise<void> {
+        if (this.current < this.maxConcurrency) {
+            this.current++;
+            return Promise.resolve();
+        }
+        return new Promise((resolve) => {
+            this.queue.push(resolve);
+        });
+    }
+
+    release(): void {
+        this.current--;
+        const next = this.queue.shift();
+        if (next) {
+            this.current++;
+            next();
+        }
+    }
+}
+
+// 设置最大并发数（可调整）
+const limiter = new ConcurrencyLimiter(5); // 限制为 5 个并发请求
+
 function normalizeUrl(url: string): string {
     try {
         const urlObj = new URL(url);
@@ -34,6 +67,7 @@ function normalizeUrl(url: string): string {
         if (!urlObj.pathname.endsWith('/')) {
             urlObj.pathname += '/';
         }
+        console.debug(`Normalized URL: ${url} -> ${urlObj.toString()}`);
         return urlObj.toString();
     } catch (e) {
         console.error(`Invalid URL: ${url}`, e);
@@ -42,7 +76,9 @@ function normalizeUrl(url: string): string {
 }
 
 function resolvePath(path: string): string {
-    return path.startsWith('~/') ? join(homedir(), path.slice(2)) : resolve(path);
+    const resolved = path.startsWith('~/') ? join(homedir(), path.slice(2)) : resolve(path);
+    console.debug(`Resolved path: ${path} -> ${resolved}`);
+    return resolved;
 }
 
 function removeRegistryPrefix(tarballUrl: string, registries: RegistryInfo[]): string {
@@ -52,27 +88,31 @@ function removeRegistryPrefix(tarballUrl: string, registries: RegistryInfo[]): s
             .map(r => normalizeUrl(r.url))
             .sort((a, b) => b.length - a.length);
 
+        console.debug(`Removing registry prefix from tarball: ${normalizedTarball}`);
         for (const registry of normalizedRegistries) {
             if (normalizedTarball.startsWith(registry)) {
-                return normalizedTarball.slice(registry.length - 1) || '/';
+                const result = normalizedTarball.slice(registry.length - 1) || '/';
+                console.debug(`Matched registry ${registry}, result: ${result}`);
+                return result;
             }
         }
+        console.debug(`No registry prefix matched for ${normalizedTarball}`);
     } catch (e) {
-        console.error(`Invalid URL: ${tarballUrl}`, e);
+        console.error(`Invalid URL in removeRegistryPrefix: ${tarballUrl}`, e);
     }
     return tarballUrl;
 }
 
-async function loadProxyConfig(
-    proxyConfigPath = './.registry-proxy.yml'
-): Promise<ProxyConfig> {
+async function loadProxyConfig(proxyConfigPath = './.registry-proxy.yml'): Promise<ProxyConfig> {
     const resolvedPath = resolvePath(proxyConfigPath);
+    console.debug(`Loading proxy config from: ${resolvedPath}`);
     try {
         const content = await readFile(resolvedPath, 'utf8');
         const config = load(content) as ProxyConfig;
         if (!config.registries) {
             throw new Error('Missing required "registries" field in config');
         }
+        console.debug('Loaded proxy config:', JSON.stringify(config, null, 2));
         return config;
     } catch (e) {
         console.error(`Failed to load proxy config from ${resolvedPath}:`, e);
@@ -81,9 +121,12 @@ async function loadProxyConfig(
 }
 
 async function loadYarnConfig(path: string): Promise<YarnConfig> {
+    console.debug(`Loading Yarn config from: ${path}`);
     try {
         const content = await readFile(resolvePath(path), 'utf8');
-        return load(content) as YarnConfig;
+        const config = load(content) as YarnConfig;
+        console.debug(`Loaded Yarn config from ${path}:`, JSON.stringify(config, null, 2));
+        return config;
     } catch (e) {
         console.warn(`Failed to load Yarn config from ${path}:`, e);
         return {};
@@ -95,6 +138,7 @@ async function loadRegistries(
     localYarnConfigPath = './.yarnrc.yml',
     globalYarnConfigPath = join(homedir(), '.yarnrc.yml')
 ): Promise<RegistryInfo[]> {
+    console.debug('Loading registries...');
     const [proxyConfig, localYarnConfig, globalYarnConfig] = await Promise.all([
         loadProxyConfig(proxyConfigPath),
         loadYarnConfig(localYarnConfigPath),
@@ -113,13 +157,16 @@ async function loadRegistries(
                     config.npmRegistries?.[url];
                 if (registryConfig?.npmAuthToken) {
                     token = registryConfig.npmAuthToken;
+                    console.debug(`Found token for ${normalizedUrl} in Yarn config`);
                     break;
                 }
             }
         }
         registryMap.set(normalizedUrl, { url: normalizedUrl, token });
     }
-    return Array.from(registryMap.values());
+    const registries = Array.from(registryMap.values());
+    console.log('Loaded registries:', registries);
+    return registries;
 }
 
 export async function startProxyServer(
@@ -139,13 +186,17 @@ export async function startProxyServer(
     let proxyPort: number;
 
     const requestHandler = async (req: any, res: any) => {
+        console.debug(`Received request: ${req.method} ${req.url}`);
         if (!req.url || !req.headers.host) {
+            console.error('Invalid request: missing URL or host header');
             res.writeHead(400).end('Invalid Request');
             return;
         }
 
         const fullUrl = new URL(req.url, `${proxyConfig.https ? 'https' : 'http'}://${req.headers.host}`);
+        console.debug(`Full URL: ${fullUrl.toString()}`);
         if (basePath && !fullUrl.pathname.startsWith(basePath)) {
+            console.error(`Path ${fullUrl.pathname} does not match basePath ${basePath}`);
             res.writeHead(404).end('Not Found');
             return;
         }
@@ -155,23 +206,26 @@ export async function startProxyServer(
             : fullUrl.pathname;
         console.log(`Proxying: ${relativePath}`);
 
-        const responses = await Promise.all(
-            registries.map(async ({ url, token }) => {
-                try {
-                    const cleanRelativePath = relativePath.replace(/\/+$/, '');
-                    const targetUrl = `${url}${cleanRelativePath}${fullUrl.search || ''}`;
-                    console.log(`Fetching from: ${targetUrl}`);
-                    const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
-                    const response = await fetch(targetUrl, { headers });
-                    console.log(`Response from ${url}: ${response.status} ${response.statusText}`);
-                    return response.ok ? response : null;
-                } catch (e) {
-                    console.error(`Failed to fetch from ${url}:`, e);
-                    return null;
-                }
-            })
-        );
+        const fetchPromises = registries.map(async ({ url, token }) => {
+            await limiter.acquire(); // 获取并发许可
+            try {
+                const cleanRelativePath = relativePath.replace(/\/+$/, '');
+                const targetUrl = `${url}${cleanRelativePath}${fullUrl.search || ''}`;
+                console.log(`Fetching from: ${targetUrl}`);
+                const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
+                const response = await fetch(targetUrl, { headers });
+                console.log(`Response from ${url}: ${response.status} ${response.statusText}`);
+                console.debug(`Response headers from ${url}:`, Object.fromEntries(response.headers.entries()));
+                return response.ok ? response : null;
+            } catch (e) {
+                console.error(`Failed to fetch from ${url}:`, e);
+                return null;
+            } finally {
+                limiter.release(); // 释放并发许可
+            }
+        });
 
+        const responses = await Promise.all(fetchPromises);
         const successResponse = responses.find((r): r is Response => r !== null);
         if (!successResponse) {
             console.error(`All registries failed for ${relativePath}`);
@@ -180,21 +234,28 @@ export async function startProxyServer(
         }
 
         const contentType = successResponse.headers.get('Content-Type') || 'application/octet-stream';
+        console.debug(`Content-Type: ${contentType}`);
         if (contentType.includes('application/json')) {
             try {
                 const data = await successResponse.json() as PackageData;
+                console.debug('JSON response data:', JSON.stringify(data, null, 2));
                 if (data.versions) {
                     const proxyBase = `${proxyConfig.https ? 'https' : 'http'}://${req.headers.host || 'localhost:' + proxyPort}${basePath}`;
+                    console.debug(`Rewriting tarball URLs with proxy base: ${proxyBase}`);
                     for (const version in data.versions) {
                         const dist = data.versions[version]?.dist;
                         if (dist?.tarball) {
                             const originalUrl = new URL(dist.tarball);
                             const tarballPath = removeRegistryPrefix(dist.tarball, registries);
                             dist.tarball = `${proxyBase}${tarballPath}${originalUrl.search || ''}`;
+                            console.debug(`Rewrote tarball: ${originalUrl} -> ${dist.tarball}`);
                         }
                     }
                 }
-                res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(data));
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                const jsonResponse = JSON.stringify(data);
+                console.debug(`Sending JSON response: ${jsonResponse}`);
+                res.end(jsonResponse);
             } catch (e) {
                 console.error('Failed to parse JSON response:', e);
                 res.writeHead(502).end('Invalid Upstream Response');
@@ -209,24 +270,31 @@ export async function startProxyServer(
                 'Content-Type': successResponse.headers.get('Content-Type'),
                 'Content-Length': successResponse.headers.get('Content-Length'),
             };
+            console.debug(`Streaming response with headers:`, safeHeaders);
             res.writeHead(successResponse.status, safeHeaders);
-            successResponse.body.pipe(res);
+            successResponse.body.pipe(res).on('error', (err:any) => {
+                console.error(`Stream error for ${relativePath}:`, err);
+                res.writeHead(502).end('Stream Error');
+            });
         }
     };
 
     let server: HttpServer | HttpsServer;
     if (proxyConfig.https) {
         const { key, cert } = proxyConfig.https;
+        const keyPath = resolvePath(key);
+        const certPath = resolvePath(cert);
+        console.debug(`Loading HTTPS key: ${keyPath}, cert: ${certPath}`);
         try {
-            await fsPromises.access(resolvePath(key));
-            await fsPromises.access(resolvePath(cert));
+            await fsPromises.access(keyPath);
+            await fsPromises.access(certPath);
         } catch (e) {
             console.error(`HTTPS config error: key or cert file not found`, e);
             process.exit(1);
         }
         const httpsOptions = {
-            key: readFileSync(resolvePath(key)),
-            cert: readFileSync(resolvePath(cert)),
+            key: readFileSync(keyPath),
+            cert: readFileSync(certPath),
         };
         server = createHttpsServer(httpsOptions, requestHandler);
     } else {
@@ -239,12 +307,14 @@ export async function startProxyServer(
                 console.error(`Port ${port} is in use, please specify a different port or free it.`);
                 process.exit(1);
             }
+            console.error('Server error:', err);
             reject(err);
         });
         server.listen(port, () => {
             const address = server.address() as AddressInfo;
             proxyPort = address.port;
             const portFile = join(process.env.PROJECT_ROOT || process.cwd(), '.registry-proxy-port');
+            console.debug(`Writing port ${proxyPort} to file: ${portFile}`);
             writeFile(portFile, proxyPort.toString()).catch(e => console.error('Failed to write port file:', e));
             console.log(`Proxy server running on ${proxyConfig.https ? 'https' : 'http'}://localhost:${proxyPort}${basePath}`);
             resolve(server);
@@ -254,6 +324,7 @@ export async function startProxyServer(
 
 if (import.meta.url === `file://${process.argv[1]}`) {
     const [,, configPath, localYarnPath, globalYarnPath, port] = process.argv;
+    console.debug(`Starting server with args: configPath=${configPath}, localYarnPath=${localYarnPath}, globalYarnPath=${globalYarnPath}, port=${port}`);
     startProxyServer(
         configPath,
         localYarnPath,
