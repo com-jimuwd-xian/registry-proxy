@@ -128,6 +128,8 @@ export async function startProxyServer(
     console.log('Proxy base path:', basePath || '/');
     console.log('HTTPS:', !!proxyConfig.https);
 
+    let proxyPort: number;
+
     const requestHandler = async (req: any, res: any) => {
         if (!req.url || !req.headers.host) {
             res.writeHead(400).end('Invalid Request');
@@ -172,7 +174,7 @@ export async function startProxyServer(
             try {
                 const data = await successResponse.json() as PackageData;
                 if (data.versions) {
-                    const proxyBase = `${proxyConfig.https ? 'https' : 'http'}://${req.headers.host}${basePath}`;
+                    const proxyBase = `${proxyConfig.https ? 'https' : 'http'}://${req.headers.host || 'localhost:' + proxyPort}${basePath}`;
                     for (const version in data.versions) {
                         const dist = data.versions[version]?.dist;
                         if (dist?.tarball) {
@@ -189,13 +191,15 @@ export async function startProxyServer(
             }
         } else {
             if (!successResponse.body) {
+                console.error(`Empty response body from ${successResponse.url}, status: ${successResponse.status}`);
                 res.writeHead(502).end('Empty Response Body');
                 return;
             }
-            res.writeHead(
-                successResponse.status,
-                Object.fromEntries(successResponse.headers.entries())
-            );
+            const safeHeaders = {
+                'Content-Type': successResponse.headers.get('Content-Type'),
+                'Content-Length': successResponse.headers.get('Content-Length'),
+            };
+            res.writeHead(successResponse.status, safeHeaders);
             successResponse.body.pipe(res);
         }
     };
@@ -212,12 +216,19 @@ export async function startProxyServer(
     }
 
     return new Promise((resolve, reject) => {
-        server.on('error', reject);
+        server.on('error', (err: NodeJS.ErrnoException) => {
+            if (err.code === 'EADDRINUSE') {
+                console.error(`Port ${port} is in use, please specify a different port or free it.`);
+                process.exit(1);
+            }
+            reject(err);
+        });
         server.listen(port, () => {
             const address = server.address() as AddressInfo;
+            proxyPort = address.port;
             const portFile = join(process.env.PROJECT_ROOT || process.cwd(), '.registry-proxy-port');
-            writeFile(portFile, address.port.toString()).catch(e => console.error('Failed to write port file:', e));
-            console.log(`Proxy server running on ${proxyConfig.https ? 'https' : 'http'}://localhost:${address.port}${basePath}`);
+            writeFile(portFile, proxyPort.toString()).catch(e => console.error('Failed to write port file:', e));
+            console.log(`Proxy server running on ${proxyConfig.https ? 'https' : 'http'}://localhost:${proxyPort}${basePath}`);
             resolve(server);
         });
     });
