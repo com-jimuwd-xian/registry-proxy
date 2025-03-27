@@ -81,9 +81,9 @@ function removeRegistryPrefix(tarballUrl: string, registries: RegistryInfo[]): s
             .map(r => normalizeUrl(r.url))
             .sort((a, b) => b.length - a.length);
 
-        for (const registry of normalizedRegistries) {
-            if (normalizedTarball.startsWith(registry)) {
-                return normalizedTarball.slice(registry.length) || '/';
+        for (const normalizedRegistry of normalizedRegistries) {
+            if (normalizedTarball.startsWith(normalizedRegistry)) {
+                return normalizedTarball.slice(normalizedRegistry.length);
             }
         }
     } catch (e) {
