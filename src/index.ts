@@ -1,23 +1,27 @@
 #!/usr/bin/env node
 import { createServer, Server as HttpServer } from 'http';
 import { createServer as createHttpsServer, Server as HttpsServer } from 'https';
-import { readFileSync, readFile, writeFileSync } from 'fs/promises';
+import { readFileSync, promises as fsPromises } from 'fs';
 import { AddressInfo } from 'net';
 import { load } from 'js-yaml';
 import fetch, { Response } from 'node-fetch';
 import { homedir } from 'os';
 import { join, resolve } from 'path';
+import { URL } from 'url'; // 显式导入URL
+
+const { readFile, writeFile } = fsPromises;
 
 interface RegistryConfig { npmAuthToken?: string; }
+interface HttpsConfig { key: string; cert: string; }
 interface ProxyConfig {
     registries: Record<string, RegistryConfig | null>;
-    https?: {
-        key: string;
-        cert: string;
-    };
+    https?: HttpsConfig;
     basePath?: string;
 }
 interface YarnConfig { npmRegistries?: Record<string, RegistryConfig | null>; }
+interface RegistryInfo { url: string; token?: string; }
+interface PackageVersion { dist?: { tarball?: string }; }
+interface PackageData { versions?: Record<string, PackageVersion>; }
 
 function normalizeUrl(url: string): string {
     return url.endsWith('/') ? url : `${url}/`;
@@ -27,7 +31,7 @@ function resolvePath(path: string): string {
     return path.startsWith('~/') ? join(homedir(), path.slice(2)) : resolve(path);
 }
 
-function removeRegistryPrefix(tarballUrl: string, registries: { url: string }[]): string {
+function removeRegistryPrefix(tarballUrl: string, registries: RegistryInfo[]): string {
     try {
         const tarballObj = new URL(tarballUrl);
         const normalizedRegistries = registries
@@ -58,7 +62,11 @@ async function loadProxyConfig(
     const resolvedPath = resolvePath(proxyConfigPath);
     try {
         const content = await readFile(resolvedPath, 'utf8');
-        return load(content) as ProxyConfig;
+        const config = load(content) as ProxyConfig;
+        if (!config.registries) {
+            throw new Error('Missing required "registries" field in config');
+        }
+        return config;
     } catch (e) {
         console.error(`Failed to load proxy config from ${resolvedPath}:`, e);
         process.exit(1);
@@ -79,7 +87,7 @@ async function loadRegistries(
     proxyConfigPath = './.registry-proxy.yml',
     localYarnConfigPath = './.yarnrc.yml',
     globalYarnConfigPath = join(homedir(), '.yarnrc.yml')
-): Promise<{ url: string; token?: string }[]> {
+): Promise<RegistryInfo[]> {
     const [proxyConfig, localYarnConfig, globalYarnConfig] = await Promise.all([
         loadProxyConfig(proxyConfigPath),
         loadYarnConfig(localYarnConfigPath),
@@ -144,7 +152,8 @@ export async function startProxyServer(
                 try {
                     const targetUrl = `${url}${relativePath}${fullUrl.search || ''}`;
                     const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
-                    return await fetch(targetUrl, { headers });
+                    const response = await fetch(targetUrl, { headers });
+                    return response.ok ? response : null;
                 } catch (e) {
                     console.error(`Failed to fetch from ${url}:`, e);
                     return null;
@@ -152,7 +161,7 @@ export async function startProxyServer(
             })
         );
 
-        const successResponse = responses.find(r => r?.ok);
+        const successResponse = responses.find((r): r is Response => r !== null);
         if (!successResponse) {
             res.writeHead(404).end('Not Found');
             return;
@@ -160,18 +169,27 @@ export async function startProxyServer(
 
         const contentType = successResponse.headers.get('Content-Type') || 'application/octet-stream';
         if (contentType.includes('application/json')) {
-            const data = await successResponse.json();
-            if (data.versions) {
-                const proxyBase = `${proxyConfig.https ? 'https' : 'http'}://${req.headers.host}${basePath}`;
-                for (const version in data.versions) {
-                    const dist = data.versions[version].dist;
-                    if (dist?.tarball) {
-                        dist.tarball = `${proxyBase}${removeRegistryPrefix(dist.tarball, registries)}`;
+            try {
+                const data = await successResponse.json() as PackageData;
+                if (data.versions) {
+                    const proxyBase = `${proxyConfig.https ? 'https' : 'http'}://${req.headers.host}${basePath}`;
+                    for (const version in data.versions) {
+                        const dist = data.versions[version]?.dist;
+                        if (dist?.tarball) {
+                            dist.tarball = `${proxyBase}${removeRegistryPrefix(dist.tarball, registries)}`;
+                        }
                     }
                 }
+                res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(data));
+            } catch (e) {
+                console.error('Failed to parse JSON response:', e);
+                res.writeHead(502).end('Invalid Upstream Response');
             }
-            res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(data));
         } else {
+            if (!successResponse.body) {
+                res.writeHead(502).end('Empty Response Body');
+                return;
+            }
             res.writeHead(
                 successResponse.status,
                 Object.fromEntries(successResponse.headers.entries())
@@ -196,7 +214,7 @@ export async function startProxyServer(
         server.listen(port, () => {
             const address = server.address() as AddressInfo;
             const portFile = join(process.env.PROJECT_ROOT || process.cwd(), '.registry-proxy-port');
-            writeFileSync(portFile, address.port.toString());
+            writeFile(portFile, address.port.toString()).catch(e => console.error('Failed to write port file:', e));
             console.log(`Proxy server running on ${proxyConfig.https ? 'https' : 'http'}://localhost:${address.port}${basePath}`);
             resolve(server);
         });
