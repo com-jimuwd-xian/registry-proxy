@@ -8,6 +8,8 @@ import fetch, {Response} from 'node-fetch';
 import {homedir} from 'os';
 import {join, resolve} from 'path';
 import {URL} from 'url';
+import {Readable} from "node:stream";
+import {pipeline} from "node:stream/promises";
 
 const {readFile, writeFile} = fsPromises;
 
@@ -221,12 +223,14 @@ export async function startProxyServer(
 
         // 修改为按顺序尝试注册表，找到第一个成功响应即返回
         for (const {normalizedRegistryUrl, token} of registryInfos) {
+            if (req.destroyed) break;
             await limiter.acquire();
+            let response: Response | null = null;
             try {
                 const targetUrl = `${normalizedRegistryUrl}${relativePathPrefixedWithSlash}${fullUrl.search || ''}`;
                 console.log(`Fetching from: ${targetUrl}`);
                 const headers = token ? {Authorization: `Bearer ${token}`} : undefined;
-                const response = await fetch(targetUrl, {headers});
+                response = await fetch(targetUrl, {headers});
                 console.log(`Response from ${targetUrl}: ${response.status} ${response.statusText}`);
 
                 if (response.ok) {
@@ -260,35 +264,62 @@ export async function startProxyServer(
                             // 继续尝试下一个注册表
                         }
                     } else {
-                        // 非application/json 是 application/octet-stream 是tarball
+                        // 二进制流处理
                         if (!response.body) {
-                            console.error(`Empty response body from ${response.url}, status: ${response.status}`);
-                            // 继续尝试下一个注册表
+                            console.error(`Empty response body from ${response.url}`);
                             continue;
                         }
-                        const contentLength = response.headers.get('Content-Length');
-                        const safeHeaders: OutgoingHttpHeaders = {};
-                        safeHeaders["content-type"] = contentType;
-                        if (contentLength && !isNaN(Number(contentLength))) safeHeaders["content-length"] = contentLength;
-                        response.body.pipe(res).on('error', (err: any) => {
-                            console.error(`Stream error for ${relativePathPrefixedWithSlash}:`, err);
-                            res.writeHead(502).end('Stream Error');
+
+                        // 头信息处理
+                        const safeHeaders: OutgoingHttpHeaders = {
+                            'content-type': contentType,
+                            'connection': 'keep-alive',
+                        };
+
+                        // 复制关键头信息
+                        ['cache-control', 'etag', 'last-modified', 'content-encoding'].forEach(header => {
+                            const value = response?.headers.get(header);
+                            if (value) safeHeaders[header] = value;
                         });
+
                         res.writeHead(response.status, safeHeaders);
-                        return;
+
+                        // 流转换与传输
+                        const nodeStream = Readable.fromWeb(response.body as any);
+                        let isComplete = false;
+                        const cleanUp = () => {
+                            if (!isComplete) nodeStream.destroy();
+                        };
+
+
+                        try {
+                            req.on('close', cleanUp);
+                            res.on('close', cleanUp);
+                            await pipeline(nodeStream, res);
+                            isComplete = true;
+                            return;
+                        } finally {
+                            req.off('close', cleanUp);
+                            res.off('close', cleanUp);
+                        }
                     }
                 }
             } catch (e) {
-                console.error(`Failed to fetch from ${normalizedRegistryUrl}:`, e);
-                // 继续尝试下一个注册表
+                // 增强错误日志
+                if (e instanceof Error) {
+                    console.error(
+                        (e as any).code === 'ECONNREFUSED'
+                            ? `Registry ${normalizedRegistryUrl} unreachable [ECONNREFUSED]`
+                            : `Error from ${normalizedRegistryUrl}: ${e.message}`
+                    );
+                }
             } finally {
                 limiter.release();
             }
         }
 
-        // 所有注册表都尝试失败
-        console.error(`All registries failed for ${relativePathPrefixedWithSlash}`);
-        res.writeHead(404).end('Not Found - All upstream registries failed');
+        // 所有注册表尝试失败
+        res.writeHead(404).end('All upstream registries failed');
     };
 
     let server: HttpServer | HttpsServer;
