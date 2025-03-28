@@ -158,21 +158,26 @@ async function loadProxyInfo(
         readYarnConfig(globalYarnConfigPath)
     ]);
     const registryMap = new Map<string, RegistryInfo>();
-    for (const [url, regConfig] of Object.entries(proxyConfig.registries)) {
-        const normalizedUrl = normalizeUrl(url);
-        let token = regConfig?.npmAuthToken;
+    for (const [proxiedRegUrl, proxyRegConfig] of Object.entries(proxyConfig.registries)) {
+        const normalizedProxiedRegUrl = normalizeUrl(proxiedRegUrl);
+        let token = proxyRegConfig?.npmAuthToken;
         if (!token) {
             const yarnConfigs = [localYarnConfig, globalYarnConfig];
-            for (const config of yarnConfigs) {
-                const registryConfig = config.npmRegistries?.[normalizedUrl] ||
-                    config.npmRegistries?.[url];
-                if (registryConfig?.npmAuthToken) {
-                    token = registryConfig.npmAuthToken;
-                    break;
+            for (const yarnConfig of yarnConfigs) {
+                if (yarnConfig.npmRegistries) {
+                    const foundEntry = Object.entries(yarnConfig.npmRegistries)
+                        .find(([registryUrl]) => normalizedProxiedRegUrl === normalizeUrl(registryUrl))
+                    if (foundEntry) {
+                        const [, registryConfig] = foundEntry;
+                        if (registryConfig?.npmAuthToken) {
+                            token = registryConfig.npmAuthToken;
+                            break;
+                        }
+                    }
                 }
             }
         }
-        registryMap.set(normalizedUrl, {url: normalizedUrl, token});
+        registryMap.set(normalizedProxiedRegUrl, {url: normalizedProxiedRegUrl, token});
     }
     const registries = Array.from(registryMap.values());
     const https = proxyConfig.https;
