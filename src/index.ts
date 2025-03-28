@@ -52,7 +52,7 @@ interface PackageData {
 }
 
 class ConcurrencyLimiter {
-    private maxConcurrency: number;
+    private readonly maxConcurrency: number;
     private current: number = 0;
     private queue: Array<() => void> = [];
 
@@ -187,6 +187,120 @@ async function loadProxyInfo(
     return {registries, https, basePath};
 }
 
+async function fetchFromRegistry(
+    registry: RegistryInfo,
+    path: string,
+    search: string,
+    limiter: ConcurrencyLimiter
+): Promise<Response | null> {
+    await limiter.acquire();
+    try {
+        const targetUrl = `${registry.normalizedRegistryUrl}${path}${search || ''}`;
+        console.log(`Fetching from: ${targetUrl}`);
+        const headers = registry.token ? { Authorization: `Bearer ${registry.token}` } : undefined;
+        const response = await fetch(targetUrl, { headers });
+        console.log(`Response from ${targetUrl}: ${response.status} ${response.statusText}`);
+        return response.ok ? response : null;
+    } catch (e) {
+        if (e instanceof Error) {
+            console.error(
+                (e as any).code === 'ECONNREFUSED'
+                    ? `Registry ${registry.normalizedRegistryUrl} unreachable [ECONNREFUSED]`
+                    : `Error from ${registry.normalizedRegistryUrl}: ${e.message}`
+            );
+        }
+        return null;
+    } finally {
+        limiter.release();
+    }
+}
+
+// 修改后的 writeResponse 函数
+async function writeResponse(
+    res: ServerResponse,
+    response: Response,
+    req: IncomingMessage,
+    proxyInfo: ProxyInfo,
+    proxyPort: number,
+    registryInfos: RegistryInfo[]
+): Promise<void> {
+    const contentType = response.headers.get('Content-Type') || 'application/octet-stream';
+
+    // 准备通用头信息
+    const safeHeaders: OutgoingHttpHeaders = {
+        'content-type': contentType,
+        'connection': 'keep-alive'
+    };
+
+    // 复制所有可能需要的头信息
+    const headersToCopy = [
+        'cache-control', 'etag', 'last-modified',
+        'content-encoding', 'content-length'
+    ];
+
+    headersToCopy.forEach(header => {
+        const value = response.headers.get(header);
+        if (value) safeHeaders[header] = value;
+    });
+
+    try {
+        if (contentType.includes('application/json')) {
+            // JSON 处理逻辑
+            const data = await response.json() as PackageData;
+            if (data.versions) {
+                const host = req.headers.host || `localhost:${proxyPort}`;
+                const baseUrl = `${proxyInfo.https ? 'https' : 'http'}://${host}${proxyInfo.basePath === '/' ? '' : proxyInfo.basePath}`;
+
+                for (const version in data.versions) {
+                    const tarball = data.versions[version]?.dist?.tarball;
+                    if (tarball) {
+                        const path = removeRegistryPrefix(tarball, registryInfos);
+                        data.versions[version]!.dist!.tarball = `${baseUrl}${path}${new URL(tarball).search || ''}`;
+                    }
+                }
+            }
+            res.writeHead(200, safeHeaders);
+            res.end(JSON.stringify(data));
+        } else {
+            // 二进制流处理
+            if (!response.body) {
+                console.error('Empty response body');
+                process.exit(1);
+            }
+
+            // 修复流类型转换问题
+            let nodeStream: NodeJS.ReadableStream;
+            if (typeof Readable.fromWeb === 'function') {
+                // Node.js 17+ 标准方式
+                nodeStream = Readable.fromWeb(response.body as any);
+            } else {
+                // Node.js 16 及以下版本的兼容方案
+                const { PassThrough } = await import('stream');
+                const passThrough = new PassThrough();
+                const reader = (response.body as any).getReader();
+
+                const pump = async () => {
+                    const { done, value } = await reader.read();
+                    if (done) return passThrough.end();
+                    passThrough.write(value);
+                    await pump();
+                };
+
+                pump().catch(err => passThrough.destroy(err));
+                nodeStream = passThrough;
+            }
+
+            res.writeHead(response.status, safeHeaders);
+            await pipeline(nodeStream, res);
+        }
+    } catch (err) {
+        console.error('Failed to write response:', err);
+        if (!res.headersSent) {
+            res.writeHead(502).end('Internal Server Error');
+        }
+    }
+}
+
 export async function startProxyServer(
     proxyConfigPath?: string,
     localYarnConfigPath?: string,
@@ -205,122 +319,44 @@ export async function startProxyServer(
 
     const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
         if (!req.url || !req.headers.host) {
-            console.error('Invalid request: missing URL or host header');
             res.writeHead(400).end('Invalid Request');
             return;
         }
 
         const fullUrl = new URL(req.url, `${proxyInfo.https ? 'https' : 'http'}://${req.headers.host}`);
-        console.log(`Proxy server received request on ${fullUrl.toString()}`)
         if (!fullUrl.pathname.startsWith(basePathPrefixedWithSlash)) {
-            console.error(`Path ${fullUrl.pathname} does not match basePath ${basePathPrefixedWithSlash}`);
             res.writeHead(404).end('Not Found');
             return;
         }
 
-        const relativePathPrefixedWithSlash = basePathPrefixedWithSlash === '/' ? fullUrl.pathname : fullUrl.pathname.slice(basePathPrefixedWithSlash.length);
-        console.log(`Proxying: ${relativePathPrefixedWithSlash}`);
+        const path = basePathPrefixedWithSlash === '/'
+            ? fullUrl.pathname
+            : fullUrl.pathname.slice(basePathPrefixedWithSlash.length);
 
-        // 修改为按顺序尝试注册表，找到第一个成功响应即返回
-        for (const {normalizedRegistryUrl, token} of registryInfos) {
+        // 顺序尝试注册表，获取第一个成功响应
+        let successfulResponse: Response | null = null;
+        for (const registry of registryInfos) {
             if (req.destroyed) break;
-            await limiter.acquire();
-            let response: Response | null = null;
-            try {
-                const targetUrl = `${normalizedRegistryUrl}${relativePathPrefixedWithSlash}${fullUrl.search || ''}`;
-                console.log(`Fetching from: ${targetUrl}`);
-                const headers = token ? {Authorization: `Bearer ${token}`} : undefined;
-                response = await fetch(targetUrl, {headers});
-                console.log(`Response from ${targetUrl}: ${response.status} ${response.statusText}`);
 
-                if (response.ok) {
-                    const contentType = response.headers.get('Content-Type') || 'application/octet-stream';
+            const response = await fetchFromRegistry(
+                registry,
+                path,
+                fullUrl.search,
+                limiter
+            );
 
-                    if (contentType.includes('application/json')) {
-                        // application/json 元数据
-                        try {
-                            const data = await response.json() as PackageData;
-                            if (data.versions) {
-                                const requestHeadersHostFromYarnClient = req.headers.host || 'localhost:' + proxyPort;
-                                console.log("Request headers.host from yarn client is", requestHeadersHostFromYarnClient);
-                                const proxyBaseUrlNoSuffixedWithSlash = `${proxyInfo.https ? 'https' : 'http'}://${requestHeadersHostFromYarnClient}${basePathPrefixedWithSlash === '/' ? '' : basePathPrefixedWithSlash}`;
-                                console.log("proxyBaseUrlNoSuffixedWithSlash", proxyBaseUrlNoSuffixedWithSlash);
-                                for (const version in data.versions) {
-                                    const dist = data.versions[version]?.dist;
-                                    if (dist?.tarball) {
-                                        const originalUrl = new URL(dist.tarball);
-                                        const originalSearchParamsStr = originalUrl.search || '';
-                                        const tarballPathPrefixedWithSlash = removeRegistryPrefix(dist.tarball, registryInfos);
-                                        dist.tarball = `${proxyBaseUrlNoSuffixedWithSlash}${tarballPathPrefixedWithSlash}${originalSearchParamsStr}`;
-                                        if (!tarballPathPrefixedWithSlash.startsWith("/")) console.error("bad tarballPath, must be PrefixedWithSlash", tarballPathPrefixedWithSlash);
-                                    }
-                                }
-                            }
-                            res.writeHead(200, {'Content-Type': 'application/json'});
-                            res.end(JSON.stringify(data));
-                            return;
-                        } catch (e) {
-                            console.error('Failed to parse JSON response:', e);
-                            // 继续尝试下一个注册表
-                        }
-                    } else {
-                        // 二进制流处理
-                        if (!response.body) {
-                            console.error(`Empty response body from ${response.url}`);
-                            continue;
-                        }
-
-                        // 头信息处理
-                        const safeHeaders: OutgoingHttpHeaders = {
-                            'content-type': contentType,
-                            'connection': 'keep-alive',
-                        };
-
-                        // 复制关键头信息
-                        ['cache-control', 'etag', 'last-modified', 'content-encoding'].forEach(header => {
-                            const value = response?.headers.get(header);
-                            if (value) safeHeaders[header] = value;
-                        });
-
-                        if (!res.headersSent) {
-                            res.writeHead(response.status, safeHeaders);
-                        }
-
-                        // 流转换与传输
-                        const nodeStream = Readable.fromWeb(response.body as any);
-                        let isComplete = false;
-                        const cleanUp = () => {
-                            if (!isComplete) nodeStream.destroy();
-                        };
-
-                        try {
-                            req.on('close', cleanUp);
-                            res.on('close', cleanUp);
-                            await pipeline(nodeStream, res);
-                            isComplete = true;
-                            return;
-                        } finally {
-                            req.off('close', cleanUp);
-                            res.off('close', cleanUp);
-                        }
-                    }
-                }
-            } catch (e) {
-                // 增强错误日志
-                if (e instanceof Error) {
-                    console.error(
-                        (e as any).code === 'ECONNREFUSED'
-                            ? `Registry ${normalizedRegistryUrl} unreachable [ECONNREFUSED]`
-                            : `Error from ${normalizedRegistryUrl}: ${e.message}`
-                    );
-                }
-            } finally {
-                limiter.release();
+            if (response) {
+                successfulResponse = response;
+                break;
             }
         }
 
-        // 所有注册表尝试失败
-        res.writeHead(404).end('All upstream registries failed');
+        // 统一回写响应
+        if (successfulResponse) {
+            await writeResponse(res, successfulResponse, req, proxyInfo, proxyPort, registryInfos);
+        } else {
+            res.writeHead(404).end('All upstream registries failed');
+        }
     };
 
     let server: HttpServer | HttpsServer;
