@@ -189,16 +189,14 @@ async function loadProxyInfo(
 
 async function fetchFromRegistry(
     registry: RegistryInfo,
-    path: string,
-    search: string,
+    targetUrl: string,
     limiter: ConcurrencyLimiter
 ): Promise<Response | null> {
     await limiter.acquire();
     try {
-        const targetUrl = `${registry.normalizedRegistryUrl}${path}${search || ''}`;
         console.log(`Fetching from: ${targetUrl}`);
-        const headers = registry.token ? { Authorization: `Bearer ${registry.token}` } : undefined;
-        const response = await fetch(targetUrl, { headers });
+        const headers = registry.token ? {Authorization: `Bearer ${registry.token}`} : undefined;
+        const response = await fetch(targetUrl, {headers});
         console.log(`Response from ${targetUrl}: ${response.status} ${response.statusText}`);
         return response.ok ? response : null;
     } catch (e) {
@@ -215,8 +213,10 @@ async function fetchFromRegistry(
     }
 }
 
-// 修改后的 writeResponse 函数
-async function writeResponse(
+// 修改后的 writeSuccessfulResponse 函数
+async function writeSuccessfulResponse(
+    registryInfo: RegistryInfo,
+    targetUrl: string,
     res: ServerResponse,
     response: Response,
     req: IncomingMessage,
@@ -224,26 +224,32 @@ async function writeResponse(
     proxyPort: number,
     registryInfos: RegistryInfo[]
 ): Promise<void> {
-    const contentType = response.headers.get('Content-Type') || 'application/octet-stream';
 
-    // 准备通用头信息
-    const safeHeaders: OutgoingHttpHeaders = {
-        'content-type': contentType,
-        'connection': 'keep-alive'
-    };
-
-    // 复制所有可能需要的头信息
-    const headersToCopy = [
-        'cache-control', 'etag', 'last-modified',
-        'content-encoding', 'content-length'
-    ];
-
-    headersToCopy.forEach(header => {
-        const value = response.headers.get(header);
-        if (value) safeHeaders[header] = value;
-    });
+    if (!response.ok) throw new Error("Only 2xx response is supported");
 
     try {
+        const contentType = response.headers.get('Content-Type') || 'application/octet-stream';
+
+        // 准备通用头信息
+        const safeHeaders: OutgoingHttpHeaders = {
+            'content-type': contentType,
+            'connection': 'keep-alive'
+        };
+
+        // 复制所有可能需要的头信息
+        const headersToCopy = [
+            'cache-control', 'etag', 'last-modified',
+            'content-encoding', 'content-length'
+        ];
+
+        headersToCopy.forEach(header => {
+            const value = response.headers.get(header);
+            if (value) safeHeaders[header] = value;
+        });
+
+
+        res.writeHead(response.status, safeHeaders);
+
         if (contentType.includes('application/json')) {
             // JSON 处理逻辑
             const data = await response.json() as PackageData;
@@ -259,39 +265,35 @@ async function writeResponse(
                     }
                 }
             }
-            res.writeHead(200, safeHeaders);
             res.end(JSON.stringify(data));
         } else {
             // 二进制流处理
             if (!response.body) {
-                console.error('Empty response body');
-                process.exit(1);
-            }
-
-            // 修复流类型转换问题
-            let nodeStream: NodeJS.ReadableStream;
-            if (typeof Readable.fromWeb === 'function') {
-                // Node.js 17+ 标准方式
-                nodeStream = Readable.fromWeb(response.body as any);
+                console.error(`Empty response body from ${targetUrl}`);
             } else {
-                // Node.js 16 及以下版本的兼容方案
-                const { PassThrough } = await import('stream');
-                const passThrough = new PassThrough();
-                const reader = (response.body as any).getReader();
+                let nodeStream: NodeJS.ReadableStream;
+                if (typeof Readable.fromWeb === 'function') {
+                    // Node.js 17+ 标准方式
+                    nodeStream = Readable.fromWeb(response.body as any);
+                } else {
+                    // Node.js 16 及以下版本的兼容方案
+                    const {PassThrough} = await import('stream');
+                    const passThrough = new PassThrough();
+                    const reader = (response.body as any).getReader();
 
-                const pump = async () => {
-                    const { done, value } = await reader.read();
-                    if (done) return passThrough.end();
-                    passThrough.write(value);
-                    await pump();
-                };
+                    const pump = async () => {
+                        const {done, value} = await reader.read();
+                        if (done) return passThrough.end();
+                        passThrough.write(value);
+                        await pump();
+                    };
 
-                pump().catch(err => passThrough.destroy(err));
-                nodeStream = passThrough;
+                    pump().catch(err => passThrough.destroy(err));
+                    nodeStream = passThrough;
+                }
+
+                await pipeline(nodeStream, res);
             }
-
-            res.writeHead(response.status, safeHeaders);
-            await pipeline(nodeStream, res);
         }
     } catch (err) {
         console.error('Failed to write response:', err);
@@ -335,16 +337,14 @@ export async function startProxyServer(
 
         // 顺序尝试注册表，获取第一个成功响应
         let successfulResponse: Response | null = null;
+        let targetRegistry: RegistryInfo | null = null;
+        let targetUrl: string | null = null;
         for (const registry of registryInfos) {
             if (req.destroyed) break;
-
-            const response = await fetchFromRegistry(
-                registry,
-                path,
-                fullUrl.search,
-                limiter
-            );
-
+            targetRegistry = registry;
+            const search = fullUrl.search || '';
+            targetUrl = `${registry.normalizedRegistryUrl}${path}${search}`;
+            const response = await fetchFromRegistry(registry, targetUrl, limiter);
             if (response) {
                 successfulResponse = response;
                 break;
@@ -353,7 +353,7 @@ export async function startProxyServer(
 
         // 统一回写响应
         if (successfulResponse) {
-            await writeResponse(res, successfulResponse, req, proxyInfo, proxyPort, registryInfos);
+            await writeSuccessfulResponse(targetRegistry!, targetUrl!, res, successfulResponse, req, proxyInfo, proxyPort, registryInfos);
         } else {
             res.writeHead(404).end('All upstream registries failed');
         }
@@ -394,7 +394,7 @@ export async function startProxyServer(
             proxyPort = address.port;
             const portFile = join(process.env.PROJECT_ROOT || process.cwd(), '.registry-proxy-port');
             writeFile(portFile, proxyPort.toString()).catch(e => console.error('Failed to write port file:', e));
-            console.log(`Proxy server running on ${proxyInfo.https ? 'https' : 'http'}://localhost:${proxyPort}${basePathPrefixedWithSlash}`);
+            console.log(`Proxy server running on ${proxyInfo.https ? 'https' : 'http'}://localhost:${proxyPort}${basePathPrefixedWithSlash === '/' ? '' : basePathPrefixedWithSlash}`);
             resolve(server);
         });
     });
