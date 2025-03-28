@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import {createServer, Server as HttpServer, IncomingMessage, ServerResponse, OutgoingHttpHeaders} from 'http';
+import {createServer, IncomingMessage, OutgoingHttpHeaders, Server as HttpServer, ServerResponse} from 'http';
 import {createServer as createHttpsServer, Server as HttpsServer} from 'https';
-import {readFileSync, promises as fsPromises} from 'fs';
+import {promises as fsPromises, readFileSync} from 'fs';
 import {AddressInfo} from 'net';
 import {load} from 'js-yaml';
 import fetch, {Response} from 'node-fetch';
@@ -33,6 +33,12 @@ interface YarnConfig {
 interface RegistryInfo {
     url: string;
     token?: string;
+}
+
+interface ProxyInfo {
+    registries: RegistryInfo[];
+    https?: HttpsConfig;
+    basePath?: string;
 }
 
 interface PackageVersion {
@@ -115,7 +121,7 @@ function removeRegistryPrefix(tarballUrl: string, registries: RegistryInfo[]): s
     throw new Error(`Can't find tarball url ${tarballUrl} does not match given registries ${normalizedRegistries}`)
 }
 
-async function loadProxyConfig(proxyConfigPath = './.registry-proxy.yml'): Promise<ProxyConfig> {
+async function readProxyConfig(proxyConfigPath = './.registry-proxy.yml'): Promise<ProxyConfig> {
     const resolvedPath = resolvePath(proxyConfigPath);
     try {
         const content = await readFile(resolvedPath, 'utf8');
@@ -131,7 +137,7 @@ async function loadProxyConfig(proxyConfigPath = './.registry-proxy.yml'): Promi
     }
 }
 
-async function loadYarnConfig(path: string): Promise<YarnConfig> {
+async function readYarnConfig(path: string): Promise<YarnConfig> {
     try {
         const content = await readFile(resolvePath(path), 'utf8');
         return load(content) as YarnConfig;
@@ -141,15 +147,15 @@ async function loadYarnConfig(path: string): Promise<YarnConfig> {
     }
 }
 
-async function loadRegistries(
+async function loadProxyInfo(
     proxyConfigPath = './.registry-proxy.yml',
     localYarnConfigPath = './.yarnrc.yml',
     globalYarnConfigPath = join(homedir(), '.yarnrc.yml')
-): Promise<RegistryInfo[]> {
+): Promise<ProxyInfo> {
     const [proxyConfig, localYarnConfig, globalYarnConfig] = await Promise.all([
-        loadProxyConfig(proxyConfigPath),
-        loadYarnConfig(localYarnConfigPath),
-        loadYarnConfig(globalYarnConfigPath)
+        readProxyConfig(proxyConfigPath),
+        readYarnConfig(localYarnConfigPath),
+        readYarnConfig(globalYarnConfigPath)
     ]);
     const registryMap = new Map<string, RegistryInfo>();
     for (const [url, regConfig] of Object.entries(proxyConfig.registries)) {
@@ -168,7 +174,10 @@ async function loadRegistries(
         }
         registryMap.set(normalizedUrl, {url: normalizedUrl, token});
     }
-    return Array.from(registryMap.values());
+    const registries = Array.from(registryMap.values());
+    const https = proxyConfig.https;
+    const basePath = removeEndingSlashAndForceStartingSlash(proxyConfig.basePath);
+    return {registries, https, basePath};
 }
 
 export async function startProxyServer(
@@ -177,13 +186,13 @@ export async function startProxyServer(
     globalYarnConfigPath?: string,
     port: number = 0
 ): Promise<HttpServer | HttpsServer> {
-    const proxyConfig = await loadProxyConfig(proxyConfigPath);
-    const registries = await loadRegistries(proxyConfigPath, localYarnConfigPath, globalYarnConfigPath);
-    const basePathPrefixedWithSlash: string = removeEndingSlashAndForceStartingSlash(proxyConfig.basePath);
+    const proxyInfo = await loadProxyInfo(proxyConfigPath, localYarnConfigPath, globalYarnConfigPath);
+    const registries = proxyInfo.registries;
+    const basePathPrefixedWithSlash: string = removeEndingSlashAndForceStartingSlash(proxyInfo.basePath);
 
     console.log('Active registries:', registries.map(r => r.url));
     console.log('Proxy base path:', basePathPrefixedWithSlash);
-    console.log('HTTPS:', !!proxyConfig.https);
+    console.log('HTTPS:', !!proxyInfo.https);
 
     let proxyPort: number;
 
@@ -194,7 +203,7 @@ export async function startProxyServer(
             return;
         }
 
-        const fullUrl = new URL(req.url, `${proxyConfig.https ? 'https' : 'http'}://${req.headers.host}`);
+        const fullUrl = new URL(req.url, `${proxyInfo.https ? 'https' : 'http'}://${req.headers.host}`);
         console.log(`Proxy server received request on ${fullUrl.toString()}`)
         if (!fullUrl.pathname.startsWith(basePathPrefixedWithSlash)) {
             console.error(`Path ${fullUrl.pathname} does not match basePath ${basePathPrefixedWithSlash}`);
@@ -238,7 +247,7 @@ export async function startProxyServer(
                 if (data.versions) {
                     const requestHeadersHostFromYarnClient = req.headers.host || 'localhost:' + proxyPort;
                     console.log("Request headers.host from yarn client is", requestHeadersHostFromYarnClient);
-                    const proxyBaseUrlNoSuffixedWithSlash = `${proxyConfig.https ? 'https' : 'http'}://${requestHeadersHostFromYarnClient}${basePathPrefixedWithSlash === '/' ? '' : basePathPrefixedWithSlash}`;
+                    const proxyBaseUrlNoSuffixedWithSlash = `${proxyInfo.https ? 'https' : 'http'}://${requestHeadersHostFromYarnClient}${basePathPrefixedWithSlash === '/' ? '' : basePathPrefixedWithSlash}`;
                     console.log("proxyBaseUrlNoSuffixedWithSlash", proxyBaseUrlNoSuffixedWithSlash);
                     for (const version in data.versions) {
                         const dist = data.versions[version]?.dist;
@@ -276,8 +285,8 @@ export async function startProxyServer(
     };
 
     let server: HttpServer | HttpsServer;
-    if (proxyConfig.https) {
-        const {key, cert} = proxyConfig.https;
+    if (proxyInfo.https) {
+        const {key, cert} = proxyInfo.https;
         const keyPath = resolvePath(key);
         const certPath = resolvePath(cert);
         try {
@@ -310,7 +319,7 @@ export async function startProxyServer(
             proxyPort = address.port;
             const portFile = join(process.env.PROJECT_ROOT || process.cwd(), '.registry-proxy-port');
             writeFile(portFile, proxyPort.toString()).catch(e => console.error('Failed to write port file:', e));
-            console.log(`Proxy server running on ${proxyConfig.https ? 'https' : 'http'}://localhost:${proxyPort}${basePathPrefixedWithSlash}`);
+            console.log(`Proxy server running on ${proxyInfo.https ? 'https' : 'http'}://localhost:${proxyPort}${basePathPrefixedWithSlash}`);
             resolve(server);
         });
     });
