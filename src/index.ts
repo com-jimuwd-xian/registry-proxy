@@ -219,73 +219,76 @@ export async function startProxyServer(
         const relativePathPrefixedWithSlash = basePathPrefixedWithSlash === '/' ? fullUrl.pathname : fullUrl.pathname.slice(basePathPrefixedWithSlash.length);
         console.log(`Proxying: ${relativePathPrefixedWithSlash}`);
 
-        const fetchPromises = registryInfos.map(async ({normalizedRegistryUrl, token}) => {
+        // 修改为按顺序尝试注册表，找到第一个成功响应即返回
+        for (const {normalizedRegistryUrl, token} of registryInfos) {
             await limiter.acquire();
             try {
                 const targetUrl = `${normalizedRegistryUrl}${relativePathPrefixedWithSlash}${fullUrl.search || ''}`;
                 console.log(`Fetching from: ${targetUrl}`);
                 const headers = token ? {Authorization: `Bearer ${token}`} : undefined;
-                const response = await fetch(targetUrl, {headers,});
+                const response = await fetch(targetUrl, {headers});
                 console.log(`Response from ${targetUrl}: ${response.status} ${response.statusText}`);
-                return response.ok ? response : null;
+
+                if (response.ok) {
+                    const contentType = response.headers.get('Content-Type') || 'application/octet-stream';
+
+                    if (contentType.includes('application/json')) {
+                        // application/json 元数据
+                        try {
+                            const data = await response.json() as PackageData;
+                            if (data.versions) {
+                                const requestHeadersHostFromYarnClient = req.headers.host || 'localhost:' + proxyPort;
+                                console.log("Request headers.host from yarn client is", requestHeadersHostFromYarnClient);
+                                const proxyBaseUrlNoSuffixedWithSlash = `${proxyInfo.https ? 'https' : 'http'}://${requestHeadersHostFromYarnClient}${basePathPrefixedWithSlash === '/' ? '' : basePathPrefixedWithSlash}`;
+                                console.log("proxyBaseUrlNoSuffixedWithSlash", proxyBaseUrlNoSuffixedWithSlash);
+                                for (const version in data.versions) {
+                                    const dist = data.versions[version]?.dist;
+                                    if (dist?.tarball) {
+                                        const originalUrl = new URL(dist.tarball);
+                                        const originalSearchParamsStr = originalUrl.search || '';
+                                        const tarballPathPrefixedWithSlash = removeRegistryPrefix(dist.tarball, registryInfos);
+                                        dist.tarball = `${proxyBaseUrlNoSuffixedWithSlash}${tarballPathPrefixedWithSlash}${originalSearchParamsStr}`;
+                                        if (!tarballPathPrefixedWithSlash.startsWith("/")) console.error("bad tarballPath, must be PrefixedWithSlash", tarballPathPrefixedWithSlash);
+                                    }
+                                }
+                            }
+                            res.writeHead(200, {'Content-Type': 'application/json'});
+                            res.end(JSON.stringify(data));
+                            return;
+                        } catch (e) {
+                            console.error('Failed to parse JSON response:', e);
+                            // 继续尝试下一个注册表
+                        }
+                    } else {
+                        // 非application/json 是 application/octet-stream 是tarball
+                        if (!response.body) {
+                            console.error(`Empty response body from ${response.url}, status: ${response.status}`);
+                            // 继续尝试下一个注册表
+                            continue;
+                        }
+                        const contentLength = response.headers.get('Content-Length');
+                        const safeHeaders: OutgoingHttpHeaders = {};
+                        safeHeaders["content-type"] = contentType;
+                        if (contentLength && !isNaN(Number(contentLength))) safeHeaders["content-length"] = contentLength;
+                        response.body.pipe(res).on('error', (err: any) => {
+                            console.error(`Stream error for ${relativePathPrefixedWithSlash}:`, err);
+                            res.writeHead(502).end('Stream Error');
+                        });
+                        res.writeHead(response.status, safeHeaders);
+                        return;
+                    }
+                }
             } catch (e) {
                 console.error(`Failed to fetch from ${normalizedRegistryUrl}:`, e);
-                return null;
+                // 继续尝试下一个注册表
             } finally {
                 limiter.release();
             }
-        });
-
-        const responses = await Promise.all(fetchPromises);
-        const successResponse = responses.find((r): r is Response => r !== null);
-        if (!successResponse) {
-            console.error(`All registries failed for ${relativePathPrefixedWithSlash}`);
-            res.writeHead(404).end('Not Found - All upstream registries failed');
-            return;
         }
 
-        const contentType = successResponse.headers.get('Content-Type') || 'application/octet-stream';
-        if (contentType.includes('application/json')) {
-            try {
-                const data = await successResponse.json() as PackageData;
-                if (data.versions) {
-                    const requestHeadersHostFromYarnClient = req.headers.host || 'localhost:' + proxyPort;
-                    console.log("Request headers.host from yarn client is", requestHeadersHostFromYarnClient);
-                    const proxyBaseUrlNoSuffixedWithSlash = `${proxyInfo.https ? 'https' : 'http'}://${requestHeadersHostFromYarnClient}${basePathPrefixedWithSlash === '/' ? '' : basePathPrefixedWithSlash}`;
-                    console.log("proxyBaseUrlNoSuffixedWithSlash", proxyBaseUrlNoSuffixedWithSlash);
-                    for (const version in data.versions) {
-                        const dist = data.versions[version]?.dist;
-                        if (dist?.tarball) {
-                            const originalUrl = new URL(dist.tarball);
-                            const originalSearchParamsStr = originalUrl.search || '';
-                            const tarballPathPrefixedWithSlash = removeRegistryPrefix(dist.tarball, registryInfos);
-                            dist.tarball = `${proxyBaseUrlNoSuffixedWithSlash}${tarballPathPrefixedWithSlash}${originalSearchParamsStr}`;
-                            if (!tarballPathPrefixedWithSlash.startsWith("/")) console.error("bad tarballPath, must be PrefixedWithSlash", tarballPathPrefixedWithSlash);
-                        }
-                    }
-                }
-                res.writeHead(200, {'Content-Type': 'application/json'});
-                res.end(JSON.stringify(data));
-            } catch (e) {
-                console.error('Failed to parse JSON response:', e);
-                res.writeHead(502).end('Invalid Upstream Response');
-            }
-        } else {
-            if (!successResponse.body) {
-                console.error(`Empty response body from ${successResponse.url}, status: ${successResponse.status}`);
-                res.writeHead(502).end('Empty Response Body');
-                return;
-            }
-            const contentLength = successResponse.headers.get('Content-Length');
-            const safeHeaders: OutgoingHttpHeaders = {};
-            safeHeaders["content-type"] = contentType;
-            if (contentLength && !isNaN(Number(contentLength))) safeHeaders["content-length"] = contentLength;
-            res.writeHead(successResponse.status, safeHeaders);
-            successResponse.body.pipe(res).on('error', (err: any) => {
-                console.error(`Stream error for ${relativePathPrefixedWithSlash}:`, err);
-                res.writeHead(502).end('Stream Error');
-            });
-        }
+        // 所有注册表都尝试失败
+        console.error(`All registries failed for ${relativePathPrefixedWithSlash}`);
+        res.writeHead(404).end('Not Found - All upstream registries failed');
     };
 
     let server: HttpServer | HttpsServer;
