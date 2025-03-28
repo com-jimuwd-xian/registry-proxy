@@ -121,7 +121,8 @@ async function loadProxyConfig(proxyConfigPath = './.registry-proxy.yml'): Promi
         const content = await readFile(resolvedPath, 'utf8');
         const config = load(content) as ProxyConfig;
         if (!config.registries) {
-            throw new Error('Missing required "registries" field in config');
+            console.error('Missing required "registries" field in config');
+            process.exit(1);
         }
         return config;
     } catch (e) {
@@ -196,15 +197,14 @@ export async function startProxyServer(
         }
 
         const fullUrl = new URL(req.url, `${proxyConfig.https ? 'https' : 'http'}://${req.headers.host}`);
+        console.log(`Proxy server received request on ${fullUrl.toString()}`)
         if (!fullUrl.pathname.startsWith(basePathPrefixedWithSlash)) {
             console.error(`Path ${fullUrl.pathname} does not match basePath ${basePathPrefixedWithSlash}`);
             res.writeHead(404).end('Not Found');
             return;
         }
 
-        const relativePathPrefixedWithSlash = basePathPrefixedWithSlash
-            ? fullUrl.pathname.slice(basePathPrefixedWithSlash.length)
-            : fullUrl.pathname;
+        const relativePathPrefixedWithSlash = basePathPrefixedWithSlash === '/' ? fullUrl.pathname : fullUrl.pathname.slice(basePathPrefixedWithSlash.length);
         console.log(`Proxying: ${relativePathPrefixedWithSlash}`);
 
         const fetchPromises = registries.map(async ({url, token}) => {
