@@ -31,7 +31,7 @@ interface YarnConfig {
 }
 
 interface RegistryInfo {
-    url: string;
+    normalizedRegistryUrl: string;
     token?: string;
 }
 
@@ -111,7 +111,7 @@ function resolvePath(path: string): string {
 function removeRegistryPrefix(tarballUrl: string, registries: RegistryInfo[]): string {
     const normalizedTarball = normalizeUrl(tarballUrl);
     const normalizedRegistries = registries
-        .map(r => normalizeUrl(r.url))
+        .map(r => normalizeUrl(r.normalizedRegistryUrl))
         .sort((a, b) => b.length - a.length);
     for (const normalizedRegistry of normalizedRegistries) {
         if (normalizedTarball.startsWith(normalizedRegistry)) {
@@ -177,7 +177,7 @@ async function loadProxyInfo(
                 }
             }
         }
-        registryMap.set(normalizedProxiedRegUrl, {url: normalizedProxiedRegUrl, token});
+        registryMap.set(normalizedProxiedRegUrl, {normalizedRegistryUrl: normalizedProxiedRegUrl, token});
     }
     const registries = Array.from(registryMap.values());
     const https = proxyConfig.https;
@@ -192,10 +192,10 @@ export async function startProxyServer(
     port: number = 0
 ): Promise<HttpServer | HttpsServer> {
     const proxyInfo = await loadProxyInfo(proxyConfigPath, localYarnConfigPath, globalYarnConfigPath);
-    const registries = proxyInfo.registries;
+    const registryInfos = proxyInfo.registries;
     const basePathPrefixedWithSlash: string = removeEndingSlashAndForceStartingSlash(proxyInfo.basePath);
 
-    console.log('Active registries:', registries.map(r => r.url));
+    console.log('Active registries:', registryInfos.map(r => r.normalizedRegistryUrl));
     console.log('Proxy base path:', basePathPrefixedWithSlash);
     console.log('HTTPS:', !!proxyInfo.https);
 
@@ -219,18 +219,17 @@ export async function startProxyServer(
         const relativePathPrefixedWithSlash = basePathPrefixedWithSlash === '/' ? fullUrl.pathname : fullUrl.pathname.slice(basePathPrefixedWithSlash.length);
         console.log(`Proxying: ${relativePathPrefixedWithSlash}`);
 
-        const fetchPromises = registries.map(async ({url, token}) => {
+        const fetchPromises = registryInfos.map(async ({normalizedRegistryUrl, token}) => {
             await limiter.acquire();
             try {
-                const cleanRelativePath = relativePathPrefixedWithSlash.replace(/^\/+|\/+$/g, '');
-                const targetUrl = `${url}/${cleanRelativePath}${fullUrl.search || ''}`;
+                const targetUrl = `${normalizedRegistryUrl}${relativePathPrefixedWithSlash}${fullUrl.search || ''}`;
                 console.log(`Fetching from: ${targetUrl}`);
                 const headers = token ? {Authorization: `Bearer ${token}`} : undefined;
                 const response = await fetch(targetUrl, {headers,});
                 console.log(`Response from ${targetUrl}: ${response.status} ${response.statusText}`);
                 return response.ok ? response : null;
             } catch (e) {
-                console.error(`Failed to fetch from ${url}:`, e);
+                console.error(`Failed to fetch from ${normalizedRegistryUrl}:`, e);
                 return null;
             } finally {
                 limiter.release();
@@ -259,7 +258,7 @@ export async function startProxyServer(
                         if (dist?.tarball) {
                             const originalUrl = new URL(dist.tarball);
                             const originalSearchParamsStr = originalUrl.search || '';
-                            const tarballPathPrefixedWithSlash = removeRegistryPrefix(dist.tarball, registries);
+                            const tarballPathPrefixedWithSlash = removeRegistryPrefix(dist.tarball, registryInfos);
                             dist.tarball = `${proxyBaseUrlNoSuffixedWithSlash}${tarballPathPrefixedWithSlash}${originalSearchParamsStr}`;
                             if (!tarballPathPrefixedWithSlash.startsWith("/")) console.error("bad tarballPath, must be PrefixedWithSlash", tarballPathPrefixedWithSlash);
                         }
@@ -310,7 +309,7 @@ export async function startProxyServer(
         server = createServer(requestHandler);
     }
 
-    return new Promise((resolve, reject) => {
+    const promisedServer :Promise<HttpServer | HttpsServer> = new Promise((resolve, reject) => {
         server.on('error', (err: NodeJS.ErrnoException) => {
             if (err.code === 'EADDRINUSE') {
                 console.error(`Port ${port} is in use, please specify a different port or free it.`);
@@ -328,6 +327,8 @@ export async function startProxyServer(
             resolve(server);
         });
     });
+
+    return promisedServer as Promise<HttpServer | HttpsServer>;
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
