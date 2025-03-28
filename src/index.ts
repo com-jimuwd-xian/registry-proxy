@@ -282,7 +282,9 @@ export async function startProxyServer(
                             if (value) safeHeaders[header] = value;
                         });
 
-                        res.writeHead(response.status, safeHeaders);
+                        if (!res.headersSent) {
+                            res.writeHead(response.status, safeHeaders);
+                        }
 
                         // 流转换与传输
                         const nodeStream = Readable.fromWeb(response.body as any);
@@ -290,7 +292,6 @@ export async function startProxyServer(
                         const cleanUp = () => {
                             if (!isComplete) nodeStream.destroy();
                         };
-
 
                         try {
                             req.on('close', cleanUp);
