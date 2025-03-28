@@ -74,7 +74,7 @@ class ConcurrencyLimiter {
 
 const limiter = new ConcurrencyLimiter(3);
 
-function removeEndingSlashAndForceStartingSlash(str: string): string {
+function removeEndingSlashAndForceStartingSlash(str: string | undefined | null): string {
     if (!str) return '/';
     let trimmed = str.trim();
     if (trimmed === '/') return '/';
@@ -180,7 +180,7 @@ export async function startProxyServer(
 ): Promise<HttpServer | HttpsServer> {
     const proxyConfig = await loadProxyConfig(proxyConfigPath);
     const registries = await loadRegistries(proxyConfigPath, localYarnConfigPath, globalYarnConfigPath);
-    const basePathPrefixedWithSlash: string = proxyConfig.basePath ? `/${proxyConfig.basePath.replace(/^\/|\/$/g, '')}` : '/';
+    const basePathPrefixedWithSlash: string = removeEndingSlashAndForceStartingSlash(proxyConfig.basePath);
 
     console.log('Active registries:', registries.map(r => r.url));
     console.log('Proxy base path:', basePathPrefixedWithSlash);
