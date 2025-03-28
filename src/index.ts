@@ -309,7 +309,7 @@ export async function startProxyServer(
         server = createServer(requestHandler);
     }
 
-    const promisedServer :Promise<HttpServer | HttpsServer> = new Promise((resolve, reject) => {
+    const promisedServer: Promise<HttpServer | HttpsServer> = new Promise((resolve, reject) => {
         server.on('error', (err: NodeJS.ErrnoException) => {
             if (err.code === 'EADDRINUSE') {
                 console.error(`Port ${port} is in use, please specify a different port or free it.`);
