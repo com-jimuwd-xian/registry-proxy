@@ -151,12 +151,10 @@ async function loadRegistries(
         loadYarnConfig(localYarnConfigPath),
         loadYarnConfig(globalYarnConfigPath)
     ]);
-
     const registryMap = new Map<string, RegistryInfo>();
     for (const [url, regConfig] of Object.entries(proxyConfig.registries)) {
         const normalizedUrl = normalizeUrl(url);
         let token = regConfig?.npmAuthToken;
-
         if (!token) {
             const yarnConfigs = [localYarnConfig, globalYarnConfig];
             for (const config of yarnConfigs) {
