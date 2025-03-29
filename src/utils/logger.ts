@@ -16,7 +16,7 @@ const PREFIX = {
 };
 
 // 代理服务器专用日志
-const log = {
+const logger = {
     info: (...args: any[]) =>
         console.log(`${PREFIX.proxy}`, ...args),
 
@@ -33,4 +33,4 @@ const log = {
         process.env.DEBUG && console.debug(`${PREFIX.debug}`, ...args)
 };
 
-export default log;
+export default logger;
