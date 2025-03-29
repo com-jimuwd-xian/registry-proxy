@@ -8,8 +8,7 @@ import fetch, {Response} from 'node-fetch';
 import {homedir} from 'os';
 import {join, resolve} from 'path';
 import {URL} from 'url';
-import {Readable} from "node:stream";
-import {pipeline} from "node:stream/promises";
+import logger from "./utils/logger";
 
 const {readFile, writeFile} = fsPromises;
 
@@ -80,7 +79,7 @@ class ConcurrencyLimiter {
     }
 }
 
-const limiter = new ConcurrencyLimiter(3);
+const limiter = new ConcurrencyLimiter(10);
 
 function removeEndingSlashAndForceStartingSlash(str: string | undefined | null): string {
     if (!str) return '/';
@@ -129,12 +128,12 @@ async function readProxyConfig(proxyConfigPath = './.registry-proxy.yml'): Promi
         const content = await readFile(resolvedPath, 'utf8');
         const config = load(content) as ProxyConfig;
         if (!config.registries) {
-            console.error('Missing required "registries" field in config');
+            logger.error('Missing required "registries" field in config');
             process.exit(1);
         }
         return config;
     } catch (e) {
-        console.error(`Failed to load proxy config from ${resolvedPath}:`, e);
+        logger.error(`Failed to load proxy config from ${resolvedPath}:`, e);
         process.exit(1);
     }
 }
@@ -144,7 +143,7 @@ async function readYarnConfig(path: string): Promise<YarnConfig> {
         const content = await readFile(resolvePath(path), 'utf8');
         return load(content) as YarnConfig;
     } catch (e) {
-        console.warn(`Failed to load Yarn config from ${path}:`, e);
+        logger.warn(`Failed to load Yarn config from ${path}:`, e);
         return {};
     }
 }
@@ -194,14 +193,15 @@ async function fetchFromRegistry(
 ): Promise<Response | null> {
     await limiter.acquire();
     try {
-        console.log(`Fetching from: ${targetUrl}`);
-        const headers = registry.token ? {Authorization: `Bearer ${registry.token}`} : undefined;
+        logger.info(`Fetching from: ${targetUrl}`);
+        const headers: {} = registry.token ? {Authorization: `Bearer ${registry.token}`} : {};
+        (headers as any).Collection = "keep-alive";
         const response = await fetch(targetUrl, {headers});
-        console.log(`Response from ${targetUrl}: ${response.status} ${response.statusText}`);
+        logger.info(`Response from upstream ${targetUrl}: ${response.status} ${response.statusText} content-type=${response.headers.get('content-type')} content-length=${response.headers.get('content-length')} transfer-encoding=${response.headers.get('transfer-encoding')}`);
         return response.ok ? response : null;
     } catch (e) {
         if (e instanceof Error) {
-            console.error(
+            logger.error(
                 (e as any).code === 'ECONNREFUSED'
                     ? `Registry ${registry.normalizedRegistryUrl} unreachable [ECONNREFUSED]`
                     : `Error from ${registry.normalizedRegistryUrl}: ${e.message}`
@@ -218,85 +218,72 @@ async function writeSuccessfulResponse(
     registryInfo: RegistryInfo,
     targetUrl: string,
     res: ServerResponse,
-    response: Response,
+    upstreamResponse: Response,
     req: IncomingMessage,
     proxyInfo: ProxyInfo,
     proxyPort: number,
     registryInfos: RegistryInfo[]
 ): Promise<void> {
 
-    if (!response.ok) throw new Error("Only 2xx response is supported");
+    if (!upstreamResponse.ok) throw new Error("Only 2xx upstream response is supported");
 
     try {
-        const contentType = response.headers.get('Content-Type') || 'application/octet-stream';
+        const contentType = upstreamResponse.headers.get('content-type') || 'application/octet-stream';
+        const connection = upstreamResponse.headers.get("connection") || 'keep-alive';
 
         // 准备通用头信息
-        const safeHeaders: OutgoingHttpHeaders = {
-            'content-type': contentType,
-            'connection': 'keep-alive'
-        };
+        const safeHeaders: OutgoingHttpHeaders = {'connection': connection, 'content-type': contentType,};
 
         // 复制所有可能需要的头信息
         const headersToCopy = [
-            'cache-control', 'etag', 'last-modified',
-            'content-encoding', 'content-length'
+            'content-length',
+            'content-encoding',
+            'transfer-encoding',
         ];
 
         headersToCopy.forEach(header => {
-            const value = response.headers.get(header);
+            const value = upstreamResponse.headers.get(header);
             if (value) safeHeaders[header] = value;
         });
 
-
-        res.writeHead(response.status, safeHeaders);
-
         if (contentType.includes('application/json')) {
             // JSON 处理逻辑
-            const data = await response.json() as PackageData;
+            const data = await upstreamResponse.json() as PackageData;
             if (data.versions) {
                 const host = req.headers.host || `localhost:${proxyPort}`;
                 const baseUrl = `${proxyInfo.https ? 'https' : 'http'}://${host}${proxyInfo.basePath === '/' ? '' : proxyInfo.basePath}`;
 
-                for (const version in data.versions) {
-                    const tarball = data.versions[version]?.dist?.tarball;
+                for (const versionKey in data.versions) {
+                    const packageVersion = data.versions[versionKey];
+                    const tarball = packageVersion?.dist?.tarball;
                     if (tarball) {
                         const path = removeRegistryPrefix(tarball, registryInfos);
-                        data.versions[version]!.dist!.tarball = `${baseUrl}${path}${new URL(tarball).search || ''}`;
+                        const proxiedTarballUrl: string = `${baseUrl}${path}${new URL(tarball).search || ''}`;
+                        packageVersion!.dist!.tarball = proxiedTarballUrl as string;
                     }
                 }
             }
-            res.end(JSON.stringify(data));
+            res.writeHead(upstreamResponse.status, {"content-type": contentType}).end(JSON.stringify(data));
         } else {
             // 二进制流处理
-            if (!response.body) {
-                console.error(`Empty response body from ${targetUrl}`);
+            if (!upstreamResponse.body) {
+                logger.error(`Empty response body from ${targetUrl}`);
+                res.writeHead(502).end('Empty Upstream Response');
             } else {
-                let nodeStream: NodeJS.ReadableStream;
-                if (typeof Readable.fromWeb === 'function') {
-                    // Node.js 17+ 标准方式
-                    nodeStream = Readable.fromWeb(response.body as any);
-                } else {
-                    // Node.js 16 及以下版本的兼容方案
-                    const {PassThrough} = await import('stream');
-                    const passThrough = new PassThrough();
-                    const reader = (response.body as any).getReader();
-
-                    const pump = async () => {
-                        const {done, value} = await reader.read();
-                        if (done) return passThrough.end();
-                        passThrough.write(value);
-                        await pump();
-                    };
-
-                    pump().catch(err => passThrough.destroy(err));
-                    nodeStream = passThrough;
-                }
-
-                await pipeline(nodeStream, res);
+                // write back to client
+                res.writeHead(upstreamResponse.status, safeHeaders);
+                // stop transfer if client is closed accidentally.
+                // req.on('close', () => upstreamResponse.body?.unpipe());
+                // write back body data (chunked probably)
+                upstreamResponse.body
+                    .on('data', (chunk) => res.write(chunk))
+                    .on('end', () => res.end())
+                    .on('close', () => res.destroy(new Error(`Upstream server ${registryInfo.normalizedRegistryUrl} closed connection while transferring data on url ${targetUrl}`)))
+                    .on('error', (err: Error) => res.destroy(new Error(`Stream error: ${err.message}`, {cause: err,})));
             }
         }
     } catch (err) {
-        console.error('Failed to write response:', err);
+        logger.error('Failed to write upstreamResponse:', err);
         if (!res.headersSent) {
             res.writeHead(502).end('Internal Server Error');
         }
@@ -313,9 +300,9 @@ export async function startProxyServer(
     const registryInfos = proxyInfo.registries;
     const basePathPrefixedWithSlash: string = removeEndingSlashAndForceStartingSlash(proxyInfo.basePath);
 
-    console.log('Active registries:', registryInfos.map(r => r.normalizedRegistryUrl));
-    console.log('Proxy base path:', basePathPrefixedWithSlash);
-    console.log('HTTPS:', !!proxyInfo.https);
+    logger.info('Active registries:', registryInfos.map(r => r.normalizedRegistryUrl));
+    logger.info('Proxy base path:', basePathPrefixedWithSlash);
+    logger.info('HTTPS:', !!proxyInfo.https);
 
     let proxyPort: number;
 
@@ -344,9 +331,9 @@ export async function startProxyServer(
             targetRegistry = registry;
             const search = fullUrl.search || '';
             targetUrl = `${registry.normalizedRegistryUrl}${path}${search}`;
-            const response = await fetchFromRegistry(registry, targetUrl, limiter);
-            if (response) {
-                successfulResponse = response;
+            const okResponseOrNull = await fetchFromRegistry(registry, targetUrl, limiter);
+            if (okResponseOrNull) {
+                successfulResponse = okResponseOrNull;
                 break;
             }
         }
@@ -368,7 +355,7 @@ export async function startProxyServer(
             await fsPromises.access(keyPath);
             await fsPromises.access(certPath);
         } catch (e) {
-            console.error(`HTTPS config error: key or cert file not found`, e);
+            logger.error(`HTTPS config error: key or cert file not found`, e);
             process.exit(1);
         }
         const httpsOptions = {
@@ -383,18 +370,18 @@ export async function startProxyServer(
     const promisedServer: Promise<HttpServer | HttpsServer> = new Promise((resolve, reject) => {
         server.on('error', (err: NodeJS.ErrnoException) => {
             if (err.code === 'EADDRINUSE') {
-                console.error(`Port ${port} is in use, please specify a different port or free it.`);
+                logger.error(`Port ${port} is in use, please specify a different port or free it.`);
                 process.exit(1);
             }
-            console.error('Server error:', err);
+            logger.error('Server error:', err);
             reject(err);
         });
         server.listen(port, () => {
             const address = server.address() as AddressInfo;
             proxyPort = address.port;
             const portFile = join(process.env.PROJECT_ROOT || process.cwd(), '.registry-proxy-port');
-            writeFile(portFile, proxyPort.toString()).catch(e => console.error('Failed to write port file:', e));
-            console.log(`Proxy server running on ${proxyInfo.https ? 'https' : 'http'}://localhost:${proxyPort}${basePathPrefixedWithSlash === '/' ? '' : basePathPrefixedWithSlash}`);
+            writeFile(portFile, proxyPort.toString()).catch(e => logger.error('Failed to write port file:', e));
+            logger.info(`Proxy server running on ${proxyInfo.https ? 'https' : 'http'}://localhost:${proxyPort}${basePathPrefixedWithSlash === '/' ? '' : basePathPrefixedWithSlash}`);
             resolve(server);
         });
     });
@@ -410,7 +397,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         globalYarnPath,
         parseInt(port, 10) || 0
     ).catch(err => {
-        console.error('Failed to start server:', err);
+        logger.error('Failed to start server:', err);
         process.exit(1);
     });
 }
