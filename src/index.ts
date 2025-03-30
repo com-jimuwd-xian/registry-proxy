@@ -1,6 +1,12 @@
 #!/usr/bin/env node
-import {createServer, IncomingMessage, OutgoingHttpHeaders, Server as HttpServer, ServerResponse} from 'http';
-import {createServer as createHttpsServer, Server as HttpsServer} from 'https';
+import http, {
+    createServer,
+    IncomingMessage,
+    OutgoingHttpHeaders,
+    Server as HttpServer,
+    ServerResponse
+} from 'node:http';
+import https, {createServer as createHttpsServer, Server as HttpsServer} from 'node:https';
 import {promises as fsPromises, readFileSync} from 'fs';
 import {AddressInfo} from 'net';
 import {load} from 'js-yaml';
@@ -8,7 +14,8 @@ import fetch, {Response} from 'node-fetch';
 import {homedir} from 'os';
 import {join, resolve} from 'path';
 import {URL} from 'url';
-import logger from "./utils/logger";
+import logger from "./utils/logger.js";
+import {IncomingHttpHeaders} from "http";
 
 const {readFile, writeFile} = fsPromises;
 
@@ -189,14 +196,18 @@ async function loadProxyInfo(
 async function fetchFromRegistry(
     registry: RegistryInfo,
     targetUrl: string,
+    reqFromDownstreamClient: IncomingMessage,
     limiter: ConcurrencyLimiter
 ): Promise<Response | null> {
     await limiter.acquire();
     try {
-        logger.info(`Fetching from: ${targetUrl}`);
+        logger.info(`Fetching from upstream: ${targetUrl}`);
+        const headersFromDownstreamClient: IncomingHttpHeaders = reqFromDownstreamClient.headers;
         const headers: {} = registry.token ? {Authorization: `Bearer ${registry.token}`} : {};
-        (headers as any).Collection = "keep-alive";
-        const response = await fetch(targetUrl, {headers});
+        // 合并 headersFromDownstreamClient 和 headers
+        const mergedHeaders: {} = {...headersFromDownstreamClient, ...headers,};
+        // (mergedHeaders as any).connection = "keep-alive"; 不允许私自添加 connection: keep-alive header，应当最终下游客户端自己的选择
+        const response = await fetch(targetUrl, {headers: mergedHeaders});
         logger.info(`Response from upstream ${targetUrl}: ${response.status} ${response.statusText} content-type=${response.headers.get('content-type')} content-length=${response.headers.get('content-length')} transfer-encoding=${response.headers.get('transfer-encoding')}`);
         return response.ok ? response : null;
     } catch (e) {
@@ -206,6 +217,8 @@ async function fetchFromRegistry(
                     ? `Registry ${registry.normalizedRegistryUrl} unreachable [ECONNREFUSED]`
                     : `Error from ${registry.normalizedRegistryUrl}: ${e.message}`
             );
+        } else {
+            logger.error("Unknown error", e);
         }
         return null;
     } finally {
@@ -213,13 +226,19 @@ async function fetchFromRegistry(
     }
 }
 
-// 修改后的 writeSuccessfulResponse 函数
-async function writeSuccessfulResponse(
+function resetHeaderContentLengthIfTransferEncodingIsAbsent(safeHeaders: OutgoingHttpHeaders, targetUrl: string, bodyData: string) {
+    if (!safeHeaders["transfer-encoding"]) {
+        logger.info(`Transfer-Encoding header is absent, then set the content-length header, upstream url is ${targetUrl}`);
+        safeHeaders["content-length"] = bodyData.length;
+    }
+}
+
+async function writeResponseToDownstreamClient(
     registryInfo: RegistryInfo,
     targetUrl: string,
-    res: ServerResponse,
+    resToDownstreamClient: ServerResponse,
     upstreamResponse: Response,
-    req: IncomingMessage,
+    reqFromDownstreamClient: IncomingMessage,
     proxyInfo: ProxyInfo,
     proxyPort: number,
     registryInfos: RegistryInfo[]
@@ -228,31 +247,24 @@ async function writeSuccessfulResponse(
     if (!upstreamResponse.ok) throw new Error("Only 2xx upstream response is supported");
 
     try {
-        const contentType = upstreamResponse.headers.get('content-type') || 'application/octet-stream';
-        const connection = upstreamResponse.headers.get("connection") || 'keep-alive';
-
-        // 准备通用头信息
-        const safeHeaders: OutgoingHttpHeaders = {'connection': connection, 'content-type': contentType,};
-
-        // 复制所有可能需要的头信息
-        const headersToCopy = [
-            'content-length',
-            'content-encoding',
-            'transfer-encoding',
-        ];
-
+        // 准备通用响应头信息
+        const safeHeaders: OutgoingHttpHeaders = {};
+        // 复制所有可能需要的头信息（不包含安全相关的敏感头信息，如access-control-allow-origin、set-cookie、server、strict-transport-security等，这意味着代理服务器向下游客户端屏蔽了这些认证等安全数据）
+        // 也不能包含cf-cache-status、cf-ray（Cloudflare 特有字段）可能干扰客户端解析。
+        const headersToCopy = ['cache-control', 'connection', 'content-type', 'content-encoding', 'content-length', 'date', 'etag', 'last-modified', 'transfer-encoding', 'vary',];
         headersToCopy.forEach(header => {
             const value = upstreamResponse.headers.get(header);
             if (value) safeHeaders[header] = value;
         });
+        if (!safeHeaders['content-type']) safeHeaders['content-type'] = 'application/octet-stream';
+        const contentType = safeHeaders['content-type'] as string;
 
         if (contentType.includes('application/json')) {
             // JSON 处理逻辑
             const data = await upstreamResponse.json() as PackageData;
             if (data.versions) {
-                const host = req.headers.host || `localhost:${proxyPort}`;
+                const host = reqFromDownstreamClient.headers.host || `localhost:${proxyPort}`;
                 const baseUrl = `${proxyInfo.https ? 'https' : 'http'}://${host}${proxyInfo.basePath === '/' ? '' : proxyInfo.basePath}`;
-
                 for (const versionKey in data.versions) {
                     const packageVersion = data.versions[versionKey];
                     const tarball = packageVersion?.dist?.tarball;
@@ -263,29 +275,65 @@ async function writeSuccessfulResponse(
                     }
                 }
             }
-            res.writeHead(upstreamResponse.status, {"content-type": contentType}).end(JSON.stringify(data));
-        } else {
+            const bodyData = JSON.stringify(data);
+            resetHeaderContentLengthIfTransferEncodingIsAbsent(safeHeaders, targetUrl, bodyData);
+            logger.info(`Response to downstream client headers`, JSON.stringify(safeHeaders), targetUrl);
+            resToDownstreamClient.writeHead(upstreamResponse.status, safeHeaders/*{'content-type': 'application/json'}*/).end(bodyData);
+        } else if (contentType.includes('application/octet-stream')) {
             // 二进制流处理
             if (!upstreamResponse.body) {
-                logger.error(`Empty response body from ${targetUrl}`);
-                res.writeHead(502).end('Empty Upstream Response');
+                logger.error(`Empty response body from upstream ${targetUrl}`);
+                resToDownstreamClient.writeHead(502).end('Empty Upstream Response');
             } else {
                 // write back to client
-                res.writeHead(upstreamResponse.status, safeHeaders);
-                // stop transfer if client is closed accidentally.
-                // req.on('close', () => upstreamResponse.body?.unpipe());
+                logger.info(`Response to downstream client headers`, JSON.stringify(safeHeaders), targetUrl);
+                resToDownstreamClient.writeHead(upstreamResponse.status, safeHeaders);
+                // stop pipe when req from client is closed accidentally.
+                const cleanup = () => {
+                    reqFromDownstreamClient.off('close', cleanup);
+                    logger.info(`Req from downstream client is closed, stop pipe from upstream ${targetUrl} to downstream client.`);
+                    upstreamResponse.body?.unpipe();
+                };
+                reqFromDownstreamClient.on('close', cleanup);
+                reqFromDownstreamClient.on('end', () => logger.info("Req from downstream client ends."));
+                // clean up when server closes connection to downstream client.
+                const cleanup0 = () => {
+                    resToDownstreamClient.off('close', cleanup0);
+                    logger.info(`Close connection to downstream client, upstream url is ${targetUrl}`);
+                    upstreamResponse.body?.unpipe();
+                }
+                resToDownstreamClient.on('close', cleanup0);
                 // write back body data (chunked probably)
+                // pipe upstream body to downstream client
+                upstreamResponse.body.pipe(resToDownstreamClient, {end: false});
                 upstreamResponse.body
-                    .on('data', (chunk) => res.write(chunk))
-                    .on('end', () => res.end())
-                    .on('close', () => res.destroy(new Error(`Upstream server ${registryInfo.normalizedRegistryUrl} closed connection while transferring data on url ${targetUrl}`)))
-                    .on('error', (err: Error) => res.destroy(new Error(`Stream error: ${err.message}`, {cause: err,})));
+                    .on('data', (chunk) => logger.info(`Chunk transferred from ${targetUrl} to downstream client size=${chunk.length}`))
+                    .on('end', () => {
+                        logger.info(`Upstream server ${targetUrl} response.body ended.`);
+                        resToDownstreamClient.end();
+                    })
+                    // connection will be closed automatically when all chunk data is transferred (after stream ends).
+                    .on('close', () => {
+                        logger.info(`Upstream server ${targetUrl} closed connection.`);
+                    })
+                    .on('error', (err: Error) => {
+                        const errMsg = `Stream error: ${err.message}`;
+                        logger.error(errMsg);
+                        resToDownstreamClient.destroy(new Error(errMsg, {cause: err,}));
+                        reqFromDownstreamClient.destroy(new Error(errMsg, {cause: err,}));
+                    });
             }
+        } else {
+            logger.warn(`Unsupported response content-type from upstream ${targetUrl}`);
+            const bodyData = await upstreamResponse.text();
+            resetHeaderContentLengthIfTransferEncodingIsAbsent(safeHeaders, targetUrl, bodyData);
+            logger.info(`Response to downstream client headers`, JSON.stringify(safeHeaders), targetUrl);
+            resToDownstreamClient.writeHead(upstreamResponse.status, safeHeaders).end(bodyData);
         }
     } catch (err) {
         logger.error('Failed to write upstreamResponse:', err);
-        if (!res.headersSent) {
-            res.writeHead(502).end('Internal Server Error');
+        if (!resToDownstreamClient.headersSent) {
+            resToDownstreamClient.writeHead(502).end('Internal Server Error');
         }
     }
 }
@@ -306,15 +354,15 @@ export async function startProxyServer(
 
     let proxyPort: number;
 
-    const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
-        if (!req.url || !req.headers.host) {
-            res.writeHead(400).end('Invalid Request');
+    const requestHandler = async (reqFromDownstreamClient: IncomingMessage, resToDownstreamClient: ServerResponse) => {
+        if (!reqFromDownstreamClient.url || !reqFromDownstreamClient.headers.host) {
+            resToDownstreamClient.writeHead(400).end('Invalid Request');
             return;
         }
 
-        const fullUrl = new URL(req.url, `${proxyInfo.https ? 'https' : 'http'}://${req.headers.host}`);
+        const fullUrl = new URL(reqFromDownstreamClient.url, `${proxyInfo.https ? 'https' : 'http'}://${reqFromDownstreamClient.headers.host}`);
         if (!fullUrl.pathname.startsWith(basePathPrefixedWithSlash)) {
-            res.writeHead(404).end('Not Found');
+            resToDownstreamClient.writeHead(404).end('Not Found');
             return;
         }
 
@@ -323,26 +371,29 @@ export async function startProxyServer(
             : fullUrl.pathname.slice(basePathPrefixedWithSlash.length);
 
         // 顺序尝试注册表，获取第一个成功响应
-        let successfulResponse: Response | null = null;
+        let successfulResponseFromUpstream: Response | null = null;
         let targetRegistry: RegistryInfo | null = null;
         let targetUrl: string | null = null;
         for (const registry of registryInfos) {
-            if (req.destroyed) break;
+            if (reqFromDownstreamClient.destroyed) {
+                // 如果下游客户端自己提前断开（或取消）请求，那么这里不再逐个fallback方式请求（fetch）上游数据了，直接退出循环并返回
+                return;
+            }
             targetRegistry = registry;
             const search = fullUrl.search || '';
             targetUrl = `${registry.normalizedRegistryUrl}${path}${search}`;
-            const okResponseOrNull = await fetchFromRegistry(registry, targetUrl, limiter);
+            const okResponseOrNull = await fetchFromRegistry(registry, targetUrl, reqFromDownstreamClient, limiter);
             if (okResponseOrNull) {
-                successfulResponse = okResponseOrNull;
+                successfulResponseFromUpstream = okResponseOrNull;
                 break;
             }
         }
 
         // 统一回写响应
-        if (successfulResponse) {
-            await writeSuccessfulResponse(targetRegistry!, targetUrl!, res, successfulResponse, req, proxyInfo, proxyPort, registryInfos);
+        if (successfulResponseFromUpstream) {
+            await writeResponseToDownstreamClient(targetRegistry!, targetUrl!, resToDownstreamClient, successfulResponseFromUpstream, reqFromDownstreamClient, proxyInfo, proxyPort, registryInfos);
         } else {
-            res.writeHead(404).end('All upstream registries failed');
+            resToDownstreamClient.writeHead(404).end('All upstream registries failed');
         }
     };
 
@@ -363,9 +414,17 @@ export async function startProxyServer(
             cert: readFileSync(certPath),
         };
         server = createHttpsServer(httpsOptions, requestHandler);
+        logger.info("Proxy server's maxSockets is", https.globalAgent.maxSockets)
     } else {
         server = createServer(requestHandler);
+        logger.info("Proxy server's maxSockets is", http.globalAgent.maxSockets);
     }
+
+    logger.info(`Proxy server's initial maxConnections is ${server.maxConnections}, adjusting to 10000`);
+    server.maxConnections = 10000;
+    logger.info(`Proxy server's initial timeout is ${server.timeout}, adjusting to 60000ms`);
+    server.timeout = 60000;
+
 
     const promisedServer: Promise<HttpServer | HttpsServer> = new Promise((resolve, reject) => {
         server.on('error', (err: NodeJS.ErrnoException) => {
@@ -375,6 +434,11 @@ export async function startProxyServer(
             }
             logger.error('Server error:', err);
             reject(err);
+        });
+        server.on('connection', (socket) => {
+            logger.debug("Server on connection")
+            socket.setTimeout(60000);
+            socket.setKeepAlive(true, 30000);
         });
         server.listen(port, () => {
             const address = server.address() as AddressInfo;
