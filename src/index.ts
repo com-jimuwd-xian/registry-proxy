@@ -275,6 +275,9 @@ async function writeResponseToDownstreamClient(
             }
             const bodyData = JSON.stringify(data);
             resToDownstreamClient.removeHeader('Transfer-Encoding');
+            // 默认是 connection: keep-alive 和 keep-alive: timeout=5，这里直接给它咔嚓掉
+            resToDownstreamClient.setHeader('Connection', 'close');
+            resToDownstreamClient.removeHeader('Keep-Alive');
             resToDownstreamClient.setHeader('content-type', 'application/json');
             resToDownstreamClient.setHeader('content-length', Buffer.byteLength(bodyData));
             logger.info(`Response to downstream client headers`, JSON.stringify(resToDownstreamClient.getHeaders()), targetUrl);
@@ -348,6 +351,16 @@ async function writeResponseToDownstreamClient(
     }
 }
 
+function getDownstreamClientIp(req: IncomingMessage) {
+    // 如果经过代理（如 Nginx），取 X-Forwarded-For 的第一个 IP
+    const forwardedFor = req.headers['x-forwarded-for'];
+    if (forwardedFor) {
+        return forwardedFor.toString().split(',')[0].trim();
+    }
+    // 直接连接时，取 socket.remoteAddress
+    return req.socket.remoteAddress;
+}
+
 export async function startProxyServer(
     proxyConfigPath?: string,
     localYarnConfigPath?: string,
@@ -365,12 +378,22 @@ export async function startProxyServer(
     let proxyPort: number;
 
     const requestHandler = async (reqFromDownstreamClient: IncomingMessage, resToDownstreamClient: ServerResponse) => {
-        if (!reqFromDownstreamClient.url || !reqFromDownstreamClient.headers.host) {
+
+        const downstreamUserAgent = reqFromDownstreamClient.headers["user-agent"]; // "curl/x.x.x"
+        const downstreamIp = getDownstreamClientIp(reqFromDownstreamClient);
+        const downstreamRequestedHttpMethod = reqFromDownstreamClient.method; // "GET", "POST", etc.
+        const downstreamRequestedHost = reqFromDownstreamClient.headers.host; // "example.com:8080"
+        const downstreamRequestedFullPath = reqFromDownstreamClient.url; //  "/some/path?param=1&param=2"
+
+        logger.info(`Received downstream request ${downstreamUserAgent} ${downstreamIp} ${downstreamRequestedHttpMethod} ${downstreamRequestedHost} ${downstreamRequestedFullPath}`);
+
+        if (!downstreamRequestedFullPath || !downstreamRequestedHost) {
+            logger.warn(`400 Invalid Request, downstream ${downstreamUserAgent} req.url is absent or downstream.headers.host is absent.`)
             resToDownstreamClient.writeHead(400).end('Invalid Request');
             return;
         }
-
-        const fullUrl = new URL(reqFromDownstreamClient.url, `${proxyInfo.https ? 'https' : 'http'}://${reqFromDownstreamClient.headers.host}`);
+        const baseUrl = `${proxyInfo.https ? 'https' : 'http'}://${downstreamRequestedHost}`;
+        const fullUrl = new URL(downstreamRequestedFullPath, baseUrl);
         if (!fullUrl.pathname.startsWith(basePathPrefixedWithSlash)) {
             resToDownstreamClient.writeHead(404).end('Not Found');
             return;
@@ -379,20 +402,24 @@ export async function startProxyServer(
         const path = basePathPrefixedWithSlash === '/'
             ? fullUrl.pathname
             : fullUrl.pathname.slice(basePathPrefixedWithSlash.length);
+        const search = fullUrl.search || '';
+        const targetPath = path + search;
 
-        // 顺序尝试注册表，获取第一个成功响应
+        logger.info(`Proxying to ${targetPath}`);
+
+        // 按配置顺序尝试注册表，获取第一个成功响应
         let successfulResponseFromUpstream: Response | null = null;
         let targetRegistry: RegistryInfo | null = null;
         let targetUrl: string | null = null;
-        for (const registry of registryInfos) {
+        for (const registry_i of registryInfos) {
+            targetRegistry = registry_i;
+            targetUrl = `${targetRegistry.normalizedRegistryUrl}${targetPath}`;
             if (reqFromDownstreamClient.destroyed) {
                 // 如果下游客户端自己提前断开（或取消）请求，那么这里不再逐个fallback方式请求（fetch）上游数据了，直接退出循环并返回
+                logger.warn(`Downstream ${reqFromDownstreamClient.headers["user-agent"]} request is destroyed, no need to proxy request to upstream ${targetUrl} any more.`)
                 return;
             }
-            targetRegistry = registry;
-            const search = fullUrl.search || '';
-            targetUrl = `${registry.normalizedRegistryUrl}${path}${search}`;
-            const okResponseOrNull = await fetchFromRegistry(registry, targetUrl, reqFromDownstreamClient, limiter);
+            const okResponseOrNull = await fetchFromRegistry(targetRegistry, targetUrl, reqFromDownstreamClient, limiter);
             if (okResponseOrNull) {
                 successfulResponseFromUpstream = okResponseOrNull;
                 break;
