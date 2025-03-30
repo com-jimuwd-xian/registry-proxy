@@ -256,6 +256,7 @@ async function writeResponseToDownstreamClient(
         if (contentType.includes('application/json')) { // JSON 处理逻辑
             const data = await upstreamResponse.json() as PackageData;
             if (data.versions) { // 处理node依赖包元数据
+                logger.info("Write package meta data application/json response from upstream to downstream", targetUrl);
                 const host = reqFromDownstreamClient.headers.host || `localhost:${proxyPort}`;
                 const baseUrl = `${proxyInfo.https ? 'https' : 'http'}://${host}${proxyInfo.basePath === '/' ? '' : proxyInfo.basePath}`;
                 for (const versionKey in data.versions) {
@@ -267,12 +268,15 @@ async function writeResponseToDownstreamClient(
                         packageVersion!.dist!.tarball = proxiedTarballUrl as string;
                     }
                 }
+            } else {
+                logger.info("Write none meta data application/json response from upstream to downstream", targetUrl);
             }
             const bodyData = JSON.stringify(data);
             const safeHeaders = {'content-type': contentType, 'content-length': Buffer.byteLength(bodyData)};
             logger.info(`Response to downstream client headers`, JSON.stringify(safeHeaders), targetUrl);
             resToDownstreamClient.writeHead(upstreamResponse.status, {'content-type': 'application/json'}).end(bodyData);
         } else if (contentType.includes('application/octet-stream')) { // 二进制流处理
+            logger.info("Write application/octet-stream response from upstream to downstream", targetUrl);
             // 准备通用响应头信息
             const safeHeaders: OutgoingHttpHeaders = {};
             // 复制所有可能需要的头信息（不包含安全相关的敏感头信息，如access-control-allow-origin、set-cookie、server、strict-transport-security等，这意味着代理服务器向下游客户端屏蔽了这些认证等安全数据）
@@ -326,7 +330,7 @@ async function writeResponseToDownstreamClient(
                     });
             }
         } else {
-            logger.warn(`Unsupported response content-type from upstream ${targetUrl}`);
+            logger.warn(`Write unsupported content-type=${contentType} response from upstream to downstream ${targetUrl}`);
             const bodyData = await upstreamResponse.text();
             const safeHeaders = {'content-type': contentType, 'content-length': Buffer.byteLength(bodyData)};
             logger.info(`Response to downstream client headers`, JSON.stringify(safeHeaders), targetUrl);
