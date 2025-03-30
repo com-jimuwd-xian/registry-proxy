@@ -460,6 +460,11 @@ export async function startProxyServer(
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
+    // 确保进程捕获异常
+    process.on('uncaughtException', (err) => {
+        logger.error('Fatal error:', err);
+        process.exit(1);
+    });
     const [, , configPath, localYarnPath, globalYarnPath, port] = process.argv;
     startProxyServer(
         configPath,
