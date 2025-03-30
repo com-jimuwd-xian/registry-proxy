@@ -10,7 +10,7 @@ import https, {createServer as createHttpsServer, Server as HttpsServer} from 'n
 import {promises as fsPromises, readFileSync} from 'fs';
 import {AddressInfo} from 'net';
 import {load} from 'js-yaml';
-import fetch, {Response} from 'node-fetch';
+import fetch, {HeadersInit, Response} from 'node-fetch';
 import {homedir} from 'os';
 import {join, resolve} from 'path';
 import {URL} from 'url';
@@ -203,11 +203,17 @@ async function fetchFromRegistry(
     try {
         logger.info(`Fetching from upstream: ${targetUrl}`);
         const headersFromDownstreamClient: IncomingHttpHeaders = reqFromDownstreamClient.headers;
-        const headers: {} = registry.token ? {Authorization: `Bearer ${registry.token}`} : {};
-        // 合并 headersFromDownstreamClient 和 headers
-        const mergedHeaders: {} = {...headersFromDownstreamClient, ...headers,};
+        const authorizationHeaders: {} = registry.token ? {Authorization: `Bearer ${registry.token}`} : {};
+        // 合并 headersFromDownstreamClient 和 authorizationHeaders
+        const mergedHeaders = {...headersFromDownstreamClient, ...authorizationHeaders,};
         // (mergedHeaders as any).connection = "keep-alive"; 不允许私自添加 connection: keep-alive header，应当最终下游客户端自己的选择
-        const response = await fetch(targetUrl, {headers: mergedHeaders});
+        // 替换“Host”头为upstream的host
+        const upstreamHost = new URL(registry.normalizedRegistryUrl).host;
+        if (mergedHeaders.host) {
+            logger.info(`Replace 'Host=${mergedHeaders.host}' header in downstream request to upstream 'Host=${upstreamHost}' header when proxying to upstream ${targetUrl}.`);
+            mergedHeaders.host = upstreamHost;
+        }
+        const response = await fetch(targetUrl, {headers: mergedHeaders as HeadersInit});
         logger.info(`Response from upstream ${targetUrl}: ${response.status} ${response.statusText} content-type=${response.headers.get('content-type')} content-length=${response.headers.get('content-length')} transfer-encoding=${response.headers.get('transfer-encoding')}`);
         return response.ok ? response : null;
     } catch (e) {
@@ -226,13 +232,6 @@ async function fetchFromRegistry(
     }
 }
 
-function resetHeaderContentLengthIfTransferEncodingIsAbsent(safeHeaders: OutgoingHttpHeaders, targetUrl: string, bodyData: string) {
-    if (!safeHeaders["transfer-encoding"]) {
-        logger.info(`Transfer-Encoding header is absent, then set the content-length header, upstream url is ${targetUrl}`);
-        safeHeaders["content-length"] = bodyData.length;
-    }
-}
-
 async function writeResponseToDownstreamClient(
     registryInfo: RegistryInfo,
     targetUrl: string,
@@ -247,22 +246,10 @@ async function writeResponseToDownstreamClient(
     if (!upstreamResponse.ok) throw new Error("Only 2xx upstream response is supported");
 
     try {
-        // 准备通用响应头信息
-        const safeHeaders: OutgoingHttpHeaders = {};
-        // 复制所有可能需要的头信息（不包含安全相关的敏感头信息，如access-control-allow-origin、set-cookie、server、strict-transport-security等，这意味着代理服务器向下游客户端屏蔽了这些认证等安全数据）
-        // 也不能包含cf-cache-status、cf-ray（Cloudflare 特有字段）可能干扰客户端解析。
-        const headersToCopy = ['cache-control', 'connection', 'content-type', 'content-encoding', 'content-length', 'date', 'etag', 'last-modified', 'transfer-encoding', 'vary',];
-        headersToCopy.forEach(header => {
-            const value = upstreamResponse.headers.get(header);
-            if (value) safeHeaders[header] = value;
-        });
-        if (!safeHeaders['content-type']) safeHeaders['content-type'] = 'application/octet-stream';
-        const contentType = safeHeaders['content-type'] as string;
-
-        if (contentType.includes('application/json')) {
-            // JSON 处理逻辑
+        const contentType = upstreamResponse.headers.get("content-type") || "application/octet-stream";
+        if (contentType.includes('application/json')) { // JSON 处理逻辑
             const data = await upstreamResponse.json() as PackageData;
-            if (data.versions) {
+            if (data.versions) { // 处理node依赖包元数据
                 const host = reqFromDownstreamClient.headers.host || `localhost:${proxyPort}`;
                 const baseUrl = `${proxyInfo.https ? 'https' : 'http'}://${host}${proxyInfo.basePath === '/' ? '' : proxyInfo.basePath}`;
                 for (const versionKey in data.versions) {
@@ -276,11 +263,21 @@ async function writeResponseToDownstreamClient(
                 }
             }
             const bodyData = JSON.stringify(data);
-            resetHeaderContentLengthIfTransferEncodingIsAbsent(safeHeaders, targetUrl, bodyData);
+            const safeHeaders = {'content-type': contentType, 'content-length': Buffer.byteLength(bodyData)};
             logger.info(`Response to downstream client headers`, JSON.stringify(safeHeaders), targetUrl);
-            resToDownstreamClient.writeHead(upstreamResponse.status, safeHeaders/*{'content-type': 'application/json'}*/).end(bodyData);
-        } else if (contentType.includes('application/octet-stream')) {
-            // 二进制流处理
+            resToDownstreamClient.writeHead(upstreamResponse.status, {'content-type': 'application/json'}).end(bodyData);
+        } else if (contentType.includes('application/octet-stream')) { // 二进制流处理
+            // 准备通用响应头信息
+            const safeHeaders: OutgoingHttpHeaders = {};
+            // 复制所有可能需要的头信息（不包含安全相关的敏感头信息，如access-control-allow-origin、set-cookie、server、strict-transport-security等，这意味着代理服务器向下游客户端屏蔽了这些认证等安全数据）
+            // 也不能包含cf-cache-status、cf-ray（Cloudflare 特有字段）可能干扰客户端解析。
+            const headersToCopy = ['cache-control', 'connection', 'content-type', 'content-encoding', 'content-length', 'date', 'etag', 'last-modified', 'transfer-encoding', 'vary',];
+            headersToCopy.forEach(header => {
+                const value = upstreamResponse.headers.get(header);
+                if (value) safeHeaders[header] = value;
+            });
+            if (!safeHeaders['content-type']) safeHeaders['content-type'] = 'application/octet-stream';
+            const contentType = safeHeaders['content-type'] as string;
             if (!upstreamResponse.body) {
                 logger.error(`Empty response body from upstream ${targetUrl}`);
                 resToDownstreamClient.writeHead(502).end('Empty Upstream Response');
@@ -326,7 +323,7 @@ async function writeResponseToDownstreamClient(
         } else {
             logger.warn(`Unsupported response content-type from upstream ${targetUrl}`);
             const bodyData = await upstreamResponse.text();
-            resetHeaderContentLengthIfTransferEncodingIsAbsent(safeHeaders, targetUrl, bodyData);
+            const safeHeaders = {'content-type': contentType, 'content-length': Buffer.byteLength(bodyData)};
             logger.info(`Response to downstream client headers`, JSON.stringify(safeHeaders), targetUrl);
             resToDownstreamClient.writeHead(upstreamResponse.status, safeHeaders).end(bodyData);
         }
