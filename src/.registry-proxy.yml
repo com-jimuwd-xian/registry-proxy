@@ -1,0 +1,11 @@
+# 用于测试的仓库代理配置
+registries:
+  "https://registry.npmjs.org": { }
+
+# 代理服务器https配置 可空
+#https:
+#  key: ~/.ssl/key.pem
+#  cert: ~/.ssl/cert.pem
+
+# 代理服务器basePath字符串 可空
+#basePath: "npm-proxy"

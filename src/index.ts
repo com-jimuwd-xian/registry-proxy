@@ -249,6 +249,8 @@ async function writeResponseToDownstreamClient(
     registryInfos: RegistryInfo[]
 ): Promise<void> {
 
+    logger.info(`Writing upstream registry server ${registryInfo.normalizedRegistryUrl}'s 2xx ok response to downstream ${reqFromDownstreamClient.headers.from} ${reqFromDownstreamClient.headers["user-agent"]}`)
+
     if (!upstreamResponse.ok) throw new Error("Only 2xx upstream response is supported");
 
     try {
