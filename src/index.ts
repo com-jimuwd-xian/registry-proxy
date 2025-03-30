@@ -274,9 +274,11 @@ async function writeResponseToDownstreamClient(
                 logger.info("Write none meta data application/json response from upstream to downstream", targetUrl);
             }
             const bodyData = JSON.stringify(data);
-            const safeHeaders = {'content-type': contentType, 'content-length': Buffer.byteLength(bodyData)};
-            logger.info(`Response to downstream client headers`, JSON.stringify(safeHeaders), targetUrl);
-            resToDownstreamClient.writeHead(upstreamResponse.status, {'content-type': 'application/json'}).end(bodyData);
+            resToDownstreamClient.removeHeader('Transfer-Encoding');
+            resToDownstreamClient.setHeader('content-type', 'application/json');
+            resToDownstreamClient.setHeader('content-length', Buffer.byteLength(bodyData));
+            logger.info(`Response to downstream client headers`, JSON.stringify(resToDownstreamClient.getHeaders()), targetUrl);
+            resToDownstreamClient.writeHead(upstreamResponse.status).end(bodyData);
         } else if (contentType.includes('application/octet-stream')) { // 二进制流处理
             logger.info("Write application/octet-stream response from upstream to downstream", targetUrl);
             // 准备通用响应头信息
