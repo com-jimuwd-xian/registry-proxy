@@ -214,7 +214,13 @@ async function fetchFromRegistry(
             mergedHeaders.host = upstreamHost;
         }
         const response = await fetch(targetUrl, {headers: mergedHeaders as HeadersInit});
-        logger.info(`Response from upstream ${targetUrl}: ${response.status} ${response.statusText} content-type=${response.headers.get('content-type')} content-length=${response.headers.get('content-length')} transfer-encoding=${response.headers.get('transfer-encoding')}`);
+        logger.info(`
+        Response from upstream ${targetUrl}: ${response.status} ${response.statusText} 
+        content-type=${response.headers.get('content-type')} 
+        content-encoding=${response.headers.get('content-encoding')} 
+        content-length=${response.headers.get('content-length')} 
+        transfer-encoding=${response.headers.get('transfer-encoding')}
+        `);
         return response.ok ? response : null;
     } catch (e) {
         if (e instanceof Error) {
@@ -277,7 +283,6 @@ async function writeResponseToDownstreamClient(
                 if (value) safeHeaders[header] = value;
             });
             if (!safeHeaders['content-type']) safeHeaders['content-type'] = 'application/octet-stream';
-            const contentType = safeHeaders['content-type'] as string;
             if (!upstreamResponse.body) {
                 logger.error(`Empty response body from upstream ${targetUrl}`);
                 resToDownstreamClient.writeHead(502).end('Empty Upstream Response');
