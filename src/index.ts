@@ -2,7 +2,7 @@
 import http, {createServer, IncomingMessage, Server as HttpServer, ServerResponse} from 'node:http';
 import https, {createServer as createHttpsServer, Server as HttpsServer} from 'node:https';
 import {promises as fsPromises, readFileSync} from 'fs';
-import {AddressInfo} from 'net';
+import {AddressInfo, ListenOptions} from 'net';
 import {load} from 'js-yaml';
 import fetch, {HeadersInit, Response} from 'node-fetch';
 import {homedir} from 'os';
@@ -497,18 +497,17 @@ export async function startProxyServer(
         serverIpv4.on('error', errHandler/*this handler will call 'reject'*/);
         serverIpv6.on('connection', connectionHandler);
         serverIpv4.on('connection', connectionHandler);
-        // 为了代理服务器的健壮性，先启动ipv6监听，然后再在其回调函数中启动ipv4监听
-        serverIpv6.listen(port, '::', () => {
+        // 为了代理服务器的健壮性，要同时监听ipv4、v6地址
+        const listenOptions: ListenOptions = {port, ipv6Only: false};
+        serverIpv6.listen(listenOptions, () => {
             const addressInfo = serverIpv6.address() as AddressInfo;
             // 回写上层局部变量
             realPort = addressInfo.port;
-            logger.info(`前面已经监听了ipv6端口 ${addressInfo.address} ${addressInfo.port}，追加监听Ipv4同端口号 0.0.0.0:${addressInfo.port}`);
-            serverIpv4.listen(addressInfo.port, '0.0.0.0', () => {
-                const portFile = join(process.env.PROJECT_ROOT || process.cwd(), '.registry-proxy-port');
-                writeFile(portFile, addressInfo.port.toString()).catch(e => logger.error(`Failed to write port file: ${portFile}`, e));
-                logger.info(`Proxy server running on ${proxyInfo.https ? 'https' : 'http'}://localhost:${addressInfo.port}${basePathPrefixedWithSlash === '/' ? '' : basePathPrefixedWithSlash}`);
-                resolve({serverIpv6, serverIpv4,});
-            });
+            //logger.info(`前面已经监听了ipv6端口 ${addressInfo.address} ${addressInfo.port}，追加监听Ipv4同端口号 0.0.0.0:${addressInfo.port}`);
+            const portFile = join(process.env.PROJECT_ROOT || process.cwd(), '.registry-proxy-port');
+            writeFile(portFile, addressInfo.port.toString()).catch(e => logger.error(`Failed to write port file: ${portFile}`, e));
+            logger.info(`Proxy server running on ${proxyInfo.https ? 'https' : 'http'}://localhost:${addressInfo.port}${basePathPrefixedWithSlash === '/' ? '' : basePathPrefixedWithSlash}`);
+            resolve({serverIpv6, serverIpv4,});
         });
     });
 
