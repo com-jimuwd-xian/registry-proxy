@@ -359,16 +359,13 @@ function getDownstreamClientIp(req: IncomingMessage) {
     return req.socket.remoteAddress;
 }
 
-// 同时启动ipv6,ipv4监听，比如当客户端访问http://localhost:port时，无论客户端DNS解析到IPV4-127.0.0.1还是IPV6-::1地址，咱server都能轻松应对！
+// deprecated 出于安全考虑只监听::1地址，废弃本注释：同时启动ipv6,ipv4监听，比如当客户端访问http://localhost:port时，无论客户端DNS解析到IPV4-127.0.0.1还是IPV6-::1地址，咱server都能轻松应对！
 export async function startProxyServer(
     proxyConfigPath?: string,
     localYarnConfigPath?: string,
     globalYarnConfigPath?: string,
     port: number = 0, // if port==0, then the server will choose an unused port instead.
-): Promise<{
-    serverIpv6: HttpServer | HttpsServer;
-    serverIpv4: HttpServer | HttpsServer;
-}> {
+): Promise<HttpServer | HttpsServer> {
     const proxyInfo = await loadProxyInfo(proxyConfigPath, localYarnConfigPath, globalYarnConfigPath);
     const registryInfos = proxyInfo.registries;
     const basePathPrefixedWithSlash: string = removeEndingSlashAndForceStartingSlash(proxyInfo.basePath);
@@ -376,9 +373,6 @@ export async function startProxyServer(
     logger.info('Active registries:', registryInfos.map(r => r.normalizedRegistryUrl));
     logger.info('Proxy base path:', basePathPrefixedWithSlash);
     logger.info('HTTPS:', !!proxyInfo.https);
-
-    // the real port server is listening on if configured port is empty or 0
-    let realPort: number = port;
 
     const requestHandler = async (reqFromDownstreamClient: IncomingMessage, resToDownstreamClient: ServerResponse) => {
 
@@ -432,16 +426,15 @@ export async function startProxyServer(
 
         // 统一回写响应
         if (successfulResponseFromUpstream) {
-            await writeResponseToDownstreamClient(targetRegistry!, targetUrl!, resToDownstreamClient, successfulResponseFromUpstream, reqFromDownstreamClient, proxyInfo, realPort, registryInfos);
+            await writeResponseToDownstreamClient(targetRegistry!, targetUrl!, resToDownstreamClient, successfulResponseFromUpstream, reqFromDownstreamClient, proxyInfo, port, registryInfos);
         } else {
             resToDownstreamClient.writeHead(404).end('All upstream registries failed');
         }
     };
 
 
-    // 同时启动ipv6,ipv4监听，比如当客户端访问http://localhost:port时，无论客户端DNS解析到IPV4-127.0.0.1还是IPV6-::1地址，咱server都能轻松应对！
-    let serverIpv6: HttpServer | HttpsServer;
-    let serverIpv4: HttpServer | HttpsServer;
+    // deprecated 废弃本注释：需要同时启动ipv6,ipv4监听，比如当客户端访问http://localhost:port时，无论客户端DNS解析到IPV4-127.0.0.1还是IPV6-::1地址，咱server都能轻松应对！
+    let server: HttpServer | HttpsServer;
     if (proxyInfo.https) {
         const {key, cert} = proxyInfo.https;
         const keyPath = resolvePath(key);
@@ -457,32 +450,25 @@ export async function startProxyServer(
             key: readFileSync(keyPath),
             cert: readFileSync(certPath),
         };
-        serverIpv6 = createHttpsServer(httpsOptions, requestHandler);
-        serverIpv4 = createHttpsServer(httpsOptions, requestHandler);
+        server = createHttpsServer(httpsOptions, requestHandler);
         logger.info("Proxy server's maxSockets is", https.globalAgent.maxSockets)
     } else {
-        serverIpv6 = createServer(requestHandler);
-        serverIpv4 = createServer(requestHandler);
+        server = createServer(requestHandler);
         logger.info("Proxy server's maxSockets is", http.globalAgent.maxSockets);
     }
 
     // server参数暂时写死
     const serverMaxConnections = 10000;
     const serverTimeoutMs = 60000;
-    logger.info(`Proxy server's initial maxConnections is ${serverIpv4.maxConnections}, adjusting to ${serverMaxConnections}`);
-    serverIpv6.maxConnections = serverMaxConnections;
-    serverIpv4.maxConnections = serverMaxConnections;
-    logger.info(`Proxy server's initial timeout is ${serverIpv4.timeout}ms, adjusting to ${serverTimeoutMs}ms`);
-    serverIpv6.timeout = serverTimeoutMs;
-    serverIpv4.timeout = serverTimeoutMs;
+    logger.info(`Proxy server's initial maxConnections is ${server.maxConnections}, adjusting to ${serverMaxConnections}`);
+    server.maxConnections = serverMaxConnections;
+    logger.info(`Proxy server's initial timeout is ${server.timeout}ms, adjusting to ${serverTimeoutMs}ms`);
+    server.timeout = serverTimeoutMs;
 
-    const promisedServer: Promise<{
-        serverIpv6: HttpServer | HttpsServer;
-        serverIpv4: HttpServer | HttpsServer;
-    }> = new Promise((resolve, reject) => {
+    const promisedServer: Promise<HttpServer | HttpsServer> = new Promise((resolve, reject) => {
         const errHandler = (err: NodeJS.ErrnoException) => {
             if (err.code === 'EADDRINUSE') {
-                logger.error(`Port ${realPort} is in use, please specify a different port or free it.`, err);
+                logger.error(`Port ${port} is in use, please specify a different port or free it.`, err);
                 process.exit(1);
             }
             logger.error('Server error:', err);
@@ -493,28 +479,21 @@ export async function startProxyServer(
             socket.setTimeout(60000);
             socket.setKeepAlive(true, 30000);
         };
-        serverIpv6.on('error', errHandler/*this handler will call 'reject'*/);
-        serverIpv4.on('error', errHandler/*this handler will call 'reject'*/);
-        serverIpv6.on('connection', connectionHandler);
-        serverIpv4.on('connection', connectionHandler);
-        // 为了代理服务器的健壮性，要同时监听ipv4、v6地址
-        const listenOptions: ListenOptions = {port, ipv6Only: false};
-        serverIpv6.listen(listenOptions, () => {
-            const addressInfo = serverIpv6.address() as AddressInfo;
-            // 回写上层局部变量
-            realPort = addressInfo.port;
-            //logger.info(`前面已经监听了ipv6端口 ${addressInfo.address} ${addressInfo.port}，追加监听Ipv4同端口号 0.0.0.0:${addressInfo.port}`);
+        server.on('error', errHandler/*this handler will call 'reject'*/);
+        server.on('connection', connectionHandler);
+        // 为了代理服务器的安全性，暂时只监听本机ipv6地址【::1】，不能对本机之外暴露本代理服务地址避免造成安全隐患
+        const listenOptions: ListenOptions = {port, host: '::1', ipv6Only: true};
+        server.listen(listenOptions, () => {
+            const addressInfo = server.address() as AddressInfo;
+            port = addressInfo.port;// 回写上层局部变量
             const portFile = join(process.env.PROJECT_ROOT || process.cwd(), '.registry-proxy-port');
             writeFile(portFile, addressInfo.port.toString()).catch(e => logger.error(`Failed to write port file: ${portFile}`, e));
             logger.info(`Proxy server running on ${proxyInfo.https ? 'https' : 'http'}://localhost:${addressInfo.port}${basePathPrefixedWithSlash === '/' ? '' : basePathPrefixedWithSlash}`);
-            resolve({serverIpv6, serverIpv4,});
+            resolve(server);
         });
     });
 
-    return promisedServer as Promise<{
-        serverIpv6: HttpServer | HttpsServer;
-        serverIpv4: HttpServer | HttpsServer;
-    }>;
+    return promisedServer as Promise<HttpServer | HttpsServer>;
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
