@@ -21,18 +21,24 @@ async function doCleanup() {
     await deletePortFile();
 }
 
-// 捕获信号或异常
-process.on('SIGINT', async () => {
-    logger.info('收到 SIGINT（Ctrl+C）');
-    await gracefulShutdown();
-});
+/**
+ * 注册进程shutdown hook程序
+ * @note 本shutdown hook程序不支持KILL -9强制杀进程命令
+ */
+export function registerProcessShutdownHook() {
+    process.on('SIGINT', async () => {
+        logger.info('收到 SIGINT（Ctrl+C）');
+        await gracefulShutdown();
+    });
 
-process.on('SIGTERM', async () => {
-    logger.info('收到 SIGTERM');
-    await gracefulShutdown();
-});
+    process.on('SIGTERM', async () => {
+        logger.info('收到 SIGTERM');
+        await gracefulShutdown();
+    });
 
-process.on('uncaughtException', async (err) => {
-    logger.info('uncaughtException:', err);
-    await gracefulShutdown();
-});
+    process.on('uncaughtException', async (err) => {
+        logger.info('uncaughtException:', err);
+        await gracefulShutdown();
+    });
+}
+

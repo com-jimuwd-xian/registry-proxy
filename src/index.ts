@@ -12,7 +12,7 @@ import {IncomingHttpHeaders} from "http";
 import {ServerOptions as HttpsServerOptions} from "https";
 import logger from "./utils/logger.js";
 import ConcurrencyLimiter from "./utils/ConcurrencyLimiter.js";
-import {gracefulShutdown} from "./gracefullShutdown.js";
+import {gracefulShutdown, registerProcessShutdownHook} from "./gracefullShutdown.js";
 import {writePortFile} from "./port.js";
 
 const {readFile} = fsPromises;
@@ -497,7 +497,9 @@ export async function startProxyServer(
     return promisedServer as Promise<HttpServer | HttpsServer>;
 }
 
+// 当前模块是否是直接运行的入口文件，而不是被其他模块导入的
 if (import.meta.url === `file://${process.argv[1]}`) {
+    registerProcessShutdownHook();
     const [, , configPath, localYarnPath, globalYarnPath, port] = process.argv;
     startProxyServer(
         configPath,
