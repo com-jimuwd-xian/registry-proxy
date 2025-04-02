@@ -5,7 +5,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {execa} from 'execa';
 import net from 'node:net';
-import {fileURLToPath} from 'node:url';
+import findProjectRoot from "../utils/findProjectRoot.js";
+import {isPortConnectable} from "../utils/portTester.js";
 
 // Type definitions
 type CleanupHandler = (exitCode: number) => Promise<void>;
@@ -23,32 +24,6 @@ let proxyProcess: ReturnType<typeof execa> | null = null;
 let cleanupHandlers: CleanupHandler[] = [];
 let signalHandlers: SignalHandler[] = [];
 
-// Helper functions
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-async function findProjectRoot(startDir: string = process.cwd()): Promise<string> {
-    let dir = startDir;
-    while (dir !== '/') {
-        try {
-            await fs.access(path.join(dir, 'package.json'));
-            return dir;
-        } catch {
-            dir = path.dirname(dir);
-        }
-    }
-    throw new Error('Could not find project root (package.json not found)');
-}
-
-async function isPortAvailable(port: number): Promise<boolean> {
-    return new Promise(resolve => {
-        const server = net.createServer();
-        server.unref();
-        server.on('error', () => resolve(false));
-        server.listen({port}, () => {
-            server.close(() => resolve(true));
-        });
-    });
-}
 
 async function waitForFile(filePath: string, timeoutMs: number): Promise<boolean> {
     const startTime = Date.now();
@@ -63,6 +38,10 @@ async function waitForFile(filePath: string, timeoutMs: number): Promise<boolean
     return false;
 }
 
+/**
+ * 读取约定的端口文件内容
+ * @param filePath 由server端启动时生成的端口文件路径
+ */
 async function readPortFile(filePath: string): Promise<number> {
     const content = await fs.readFile(filePath, 'utf-8');
     const port = parseInt(content.trim(), 10);
@@ -109,10 +88,10 @@ function registerSignalHandler(handler: SignalHandler): void {
 // Main implementation
 async function main() {
     try {
-        // Find project root
-        const PROJECT_ROOT = await findProjectRoot();
-        const LOCK_FILE = path.join(PROJECT_ROOT, LOCK_FILE_NAME);
-        const PORT_FILE = path.join(PROJECT_ROOT, PORT_FILE_NAME);
+        // Find project root as base dir to get config file and other tmp files.
+        const INSTALLATION_ROOT = await findProjectRoot();
+        const LOCK_FILE = path.join(INSTALLATION_ROOT, LOCK_FILE_NAME);
+        const PORT_FILE = path.join(INSTALLATION_ROOT, PORT_FILE_NAME);
 
         // Check for existing lock file
         try {
@@ -133,13 +112,13 @@ async function main() {
         });
 
         // Change to project root
-        process.chdir(PROJECT_ROOT);
+        process.chdir(INSTALLATION_ROOT);
 
         // Start registry proxy
         console.log(`Starting registry-proxy@${REGISTRY_PROXY_VERSION} in the background...`);
         proxyProcess = execa('yarn', [
-            'dlx',
-            `com.jimuwd.xian.registry-proxy@${REGISTRY_PROXY_VERSION}`,
+            'dlx', '-p', `com.jimuwd.xian.registry-proxy@${REGISTRY_PROXY_VERSION}`,
+            'registry-proxy',
             '.registry-proxy.yml',
             '.yarnrc.yml',
             path.join(process.env.HOME || '', '.yarnrc.yml'),
@@ -170,8 +149,8 @@ async function main() {
         }
 
         const PROXY_PORT = await readPortFile(PORT_FILE);
-        const portAvailable = await isPortAvailable(PROXY_PORT);
-        if (!portAvailable) {
+        const portConnectable = await isPortConnectable(PROXY_PORT);
+        if (!portConnectable) {
             throw new Error(`Port ${PROXY_PORT} is already in use by another process`);
         }
 
@@ -208,23 +187,26 @@ async function main() {
     }
 }
 
-// Signal handling
-['SIGINT', 'SIGTERM', 'SIGHUP'].forEach(signal => {
-    process.on(signal, async () => {
-        console.log(`Received ${signal}, cleaning up...`);
-        for (const handler of signalHandlers) {
-            try {
-                await handler();
-            } catch (err) {
-                console.error('Signal handler error:', err);
+// 当前模块是否是直接运行的入口文件，而不是被其他模块导入的
+if (import.meta.url === `file://${process.argv[1]}`) {
+    // Signal handling
+    ['SIGINT', 'SIGTERM', 'SIGHUP'].forEach(signal => {
+        process.on(signal, async () => {
+            console.log(`Received ${signal}, cleaning up...`);
+            for (const handler of signalHandlers) {
+                try {
+                    await handler();
+                } catch (err) {
+                    console.error('Signal handler error:', err);
+                }
             }
-        }
-        await cleanup(1);
+            await cleanup(1);
+        });
     });
-});
 
-// Start the program
-main().catch(err => {
-    console.error('Unhandled error:', err);
-    cleanup(1);
-});
+    // Start the program
+    main().catch(err => {
+        console.error('Unhandled error:', err);
+        cleanup(1);
+    });
+}

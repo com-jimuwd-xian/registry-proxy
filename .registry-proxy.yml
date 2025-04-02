@@ -1,4 +1,4 @@
-# 用于测试的仓库代理配置
+# 用于安装本工程的仓库代理配置，本文件必须与package.json在同一个路径内
 registries:
   "https://registry.npmjs.org": { }
 
