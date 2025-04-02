@@ -6,10 +6,12 @@
   "main": "dist/server/index.js",
   "bin": {
     "registry-proxy": "dist/server/index.js",
-    "yarn-install": "dist/client/yarn-install.js"
+    "yarn-install": "dist/client/yarn-install.js",
+    "yarn-install-bash": "src/client/yarn-install.sh"
   },
   "files": [
-    "dist"
+    "dist",
+    "src/client/yarn-install.sh"
   ],
   "scripts": {
     "build": "tsc",
