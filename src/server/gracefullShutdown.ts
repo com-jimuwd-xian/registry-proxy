@@ -1,5 +1,5 @@
-import {deletePortFile} from "./port.js";
-import logger from "./utils/logger.js";
+import {deletePortFile} from "../port.js";
+import logger from "../utils/logger.js";
 
 /**
  * 优雅退出
@@ -8,17 +8,13 @@ import logger from "./utils/logger.js";
 export async function gracefulShutdown() {
     try {
         logger.info('Shutdown...');
-        await doCleanup();
+        await deletePortFile();
         logger.info('Shutdown completed.');
         process.exit(0);
     } catch (err) {
         logger.error('Failed to clean:', err);
         process.exit(1);
     }
-}
-
-async function doCleanup() {
-    await deletePortFile();
 }
 
 /**

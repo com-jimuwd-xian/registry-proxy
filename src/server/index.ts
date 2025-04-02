@@ -10,10 +10,10 @@ import {join, resolve} from 'path';
 import {URL} from 'url';
 import {IncomingHttpHeaders} from "http";
 import {ServerOptions as HttpsServerOptions} from "https";
-import logger from "./utils/logger.js";
-import ConcurrencyLimiter from "./utils/ConcurrencyLimiter.js";
+import logger from "../utils/logger.js";
+import ConcurrencyLimiter from "../utils/ConcurrencyLimiter.js";
 import {gracefulShutdown, registerProcessShutdownHook} from "./gracefullShutdown.js";
-import {writePortFile} from "./port.js";
+import {writePortFile} from "../port.js";
 
 const {readFile} = fsPromises;
 
