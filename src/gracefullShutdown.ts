@@ -22,17 +22,17 @@ async function doCleanup() {
 }
 
 // 捕获信号或异常
-process.on('SIGINT', () => {
+process.on('SIGINT', async () => {
     logger.info('收到 SIGINT（Ctrl+C）');
-    process.exit(0); // 触发 exit 事件
+    await gracefulShutdown();
 });
 
-process.on('SIGTERM', () => {
+process.on('SIGTERM', async () => {
     logger.info('收到 SIGTERM');
-    process.exit(0); // 触发 exit 事件
+    await gracefulShutdown();
 });
 
-process.on('uncaughtException', (err) => {
+process.on('uncaughtException', async (err) => {
     logger.info('uncaughtException:', err);
-    process.exit(1); // 触发 exit 事件
+    await gracefulShutdown();
 });
