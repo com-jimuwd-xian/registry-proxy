@@ -6,8 +6,7 @@
   "main": "dist/server/index.js",
   "bin": {
     "registry-proxy": "dist/server/index.js",
-    "yarn-install": "dist/client/yarn-install.js",
-    "yarn-install-bash": "src/client/yarn-install.sh"
+    "yarn-install": "dist/client/yarn-install.js"
   },
   "files": [
     "dist",

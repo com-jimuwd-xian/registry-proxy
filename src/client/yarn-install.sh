@@ -1,5 +1,8 @@
 #!/bin/bash
 
+eco "@@Deprecated@@"
+eco "use yarn-install.ts instead!"
+
 # 启用严格模式，但移除 set -e，手动处理错误
 set -u  # 未定义变量时退出
 set -o pipefail  # 管道中任一命令失败时退出
