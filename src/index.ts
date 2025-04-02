@@ -15,7 +15,7 @@ import ConcurrencyLimiter from "./utils/ConcurrencyLimiter.js";
 import {gracefulShutdown} from "./gracefullShutdown.js";
 import {writePortFile} from "./port.js";
 
-const {readFile, writeFile} = fsPromises;
+const {readFile} = fsPromises;
 
 interface RegistryConfig {
     npmAuthToken?: string;
