@@ -226,12 +226,11 @@ async function writeResponseToDownstreamClient(
     if (!upstreamResponse.ok) throw new Error("Only 2xx upstream response is supported");
 
     try {
-        const contentType = upstreamResponse.headers.get("content-type") /*|| "application/octet-stream"*/;
+        const contentType = upstreamResponse.headers.get("content-type");
         if (!contentType) {
             logger.error(`Response from upstream content-type header is absent, ${targetUrl} `);
-            process.exit(1);
-        }
-        if (contentType.includes('application/json')) { // JSON 处理逻辑
+            await gracefulShutdown();
+        } else if (contentType.includes('application/json')) { // JSON 处理逻辑
             const data = await upstreamResponse.json() as PackageData;
             if (data.versions) { // 处理node依赖包元数据
                 logger.info("Write package meta data application/json response from upstream to downstream", targetUrl);
@@ -445,7 +444,7 @@ export async function startProxyServer(
             await fsPromises.access(certPath);
         } catch (e) {
             logger.error(`HTTPS config error: key or cert file not found`, e);
-            process.exit(1);
+            await gracefulShutdown();
         }
         const httpsOptions: HttpsServerOptions = {
             key: readFileSync(keyPath),
@@ -467,10 +466,10 @@ export async function startProxyServer(
     server.timeout = serverTimeoutMs;
 
     const promisedServer: Promise<HttpServer | HttpsServer> = new Promise((resolve, reject) => {
-        const errHandler = (err: NodeJS.ErrnoException) => {
+        const errHandler = async (err: NodeJS.ErrnoException) => {
             if (err.code === 'EADDRINUSE') {
                 logger.error(`Port ${port} is in use, please specify a different port or free it.`, err);
-                process.exit(1);
+                await gracefulShutdown();
             }
             logger.error('Server error:', err);
             reject(err);
@@ -498,19 +497,14 @@ export async function startProxyServer(
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-    // 确保进程捕获异常
-    process.on('uncaughtException', (err) => {
-        logger.error('Fatal error:', err);
-        process.exit(1);
-    });
     const [, , configPath, localYarnPath, globalYarnPath, port] = process.argv;
     startProxyServer(
         configPath,
         localYarnPath,
         globalYarnPath,
         parseInt(port, 10) || 0
-    ).catch(err => {
+    ).catch(async err => {
         logger.error('Failed to start server:', err);
-        process.exit(1);
+        await gracefulShutdown();
     });
 }
