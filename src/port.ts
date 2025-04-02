@@ -19,12 +19,12 @@ export const deletePortFile = async () => {
 async function deleteFile(filePath: string) {
     try {
         await unlink(filePath);
-        console.log(`文件 ${basename(filePath)} 已删除`);
+        logger.info(`端口文件 ${basename(filePath)} 已删除`);
     } catch (err: any) {
         if (err.code === 'ENOENT') {
-            console.log('文件不存在');
+            logger.warn(`端口文件 ${filePath} 不存在`);
         } else {
-            console.error('删除失败:', err.message);
+            logger.error(`端口文件 ${filePath} 删除失败:`, err.message);
         }
     }
 }
