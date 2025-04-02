@@ -95,7 +95,6 @@ PROJECT_ROOT=$(find_project_root)
 
 # 定义锁文件和端口文件路径（固定在项目根目录）
 LOCK_FILE="$PROJECT_ROOT/.registry-proxy-install.lock"
-PORT_FILE="$PROJECT_ROOT/.registry-proxy-port"
 
 # 检查是否已经在运行（通过锁文件）
 if [ -f "$LOCK_FILE" ]; then
@@ -123,7 +122,8 @@ cleanup() {
 
   # 清理临时文件
   rm -f "$LOCK_FILE" 2>/dev/null
-  rm -f "$PORT_FILE" 2>/dev/null
+  # PORT_FILE端口临时文件是registry-proxy服务器管理的文件这里不负责清理，服务器退出时会自动清理
+  #rm -f "$PORT_FILE" 2>/dev/null
 
   # 停止代理服务器
   if [ -n "${PROXY_PID:-}" ]; then
@@ -134,6 +134,7 @@ cleanup() {
   fi
 
   # 切换到项目根目录
+  # shellcheck disable=SC2164
   cd "$PROJECT_ROOT"
 
   # 清理 npmRegistryServer 配置
@@ -148,16 +149,21 @@ cleanup() {
 trap 'cleanup 1' SIGINT SIGTERM EXIT  # 异常退出时调用 cleanup，退出码为 1
 
 # 切换到项目根目录
+# shellcheck disable=SC2164
 cd "$PROJECT_ROOT"
 
-# 使用 yarn dlx 直接运行 registry-proxy，放入后台运行
+# 使用 yarn dlx 直接运行 registry-proxy，可通过环境变量指定registry-proxy版本号，默认是latest，registry-proxy将会被放入后台运行，并在安装结束后自动退出。
 REGISTRY_PROXY_VERSION="${REGISTRY_PROXY_VERSION:-latest}"
 echo "Starting registry-proxy@$REGISTRY_PROXY_VERSION in the background (logs will be displayed below)..."
-yarn dlx com.jimuwd.xian.registry-proxy@"$REGISTRY_PROXY_VERSION" .registry-proxy.yml .yarnrc.yml ~/.yarnrc.yml &
+# 下载registry-proxy临时可执行程序并运行  因yarn可能会缓存tarball url的缘故（yarn.lock内<package>.resolution值），这里不得已只能写死本地代理端口地址，以便无论是从缓存获取tarball url还是从代理服务提供的元数据获取tarball url地址都能成功下载tarball文件
+# 但是注意 这个端口不能暴露到外部使用，只允许本地使用，避免不必要的安全隐患 事实上registry-proxy server也是只监听着::1本机端口的。
+yarn dlx com.jimuwd.xian.registry-proxy@"$REGISTRY_PROXY_VERSION" .registry-proxy.yml .yarnrc.yml ~/.yarnrc.yml 40061 &
 PROXY_PID=$!
 
 # 等待代理服务器启动并写入端口，最多 30 秒
 echo "Waiting for proxy server to start (up to 30 seconds)..."
+PORT_FILE="$PROJECT_ROOT/.registry-proxy-port"
+# shellcheck disable=SC2034
 for i in {1..300}; do  # 300 次循环，每次 0.1 秒，总共 30 秒
   if [ -f "$PORT_FILE" ]; then
     PROXY_PORT=$(cat "$PORT_FILE")
@@ -186,9 +192,9 @@ if [ -z "${PROXY_PORT:-}" ] || ! nc -z localhost "$PROXY_PORT" 2>/dev/null; then
   cleanup 1
 fi
 
-# 动态设置 npmRegistryServer 为代理地址
-yarn config set npmRegistryServer "http://localhost:$PROXY_PORT/"
-echo "Set npmRegistryServer to http://localhost:$PROXY_PORT/"
+# 动态设置 npmRegistryServer 为代理地址 注意：yarn对“localhost”域名不友好，请直接使用 [::1]
+yarn config set npmRegistryServer "http://[::1]:$PROXY_PORT"
+echo "Set npmRegistryServer to http://[::1]:$PROXY_PORT"
 
 # 使用动态代理端口运行 yarn install，并捕获错误
 if ! yarn install; then
@@ -421,10 +427,10 @@ This project provides a proxy server (`registry-proxy`) that allows Yarn to fetc
 
 - **Node.js**: Version 14 or higher.
 - **Yarn**: Version 1.x or 2.x.
-- **netcat (`nc`)**: Required for port availability checks in the install script. Install via:
+- **netcat (`nc`)**: Required for port availability checks in the installation script. Install via:
    - On macOS: `brew install netcat`
    - On Ubuntu: `sudo apt-get install netcat`
-- **Bash**: The install script requires a Bash-compatible shell.
+- **Bash**: The installation script requires a Bash-compatible shell.
 
 ## Setup
 
@@ -436,7 +442,7 @@ The proxy server is published to your private registry. Install it as a dependen
 yarn add com.jimuwd.xian.registry-proxy --registry https://repo.jimuwd.com/jimuwd/~npm/
 ```
 
-Alternatively, the install script uses `npx` to run the proxy server, so you don't need to install it explicitly.
+Alternatively, the installation script uses `npx` to run the proxy server, so you don't need to install it explicitly.
 
 ### 2. Configure Registries
 
@@ -495,7 +501,6 @@ PROJECT_ROOT=$(find_project_root)
 
 # 定义锁文件和端口文件路径（固定在项目根目录）
 LOCK_FILE="$PROJECT_ROOT/.registry-proxy-install.lock"
-PORT_FILE="$PROJECT_ROOT/.registry-proxy-port"
 
 # 检查是否已经在运行（通过锁文件）
 if [ -f "$LOCK_FILE" ]; then
@@ -523,7 +528,8 @@ cleanup() {
 
   # 清理临时文件
   rm -f "$LOCK_FILE" 2>/dev/null
-  rm -f "$PORT_FILE" 2>/dev/null
+  # PORT_FILE端口临时文件是registry-proxy服务器管理的文件这里不负责清理，服务器退出时会自动清理
+  #rm -f "$PORT_FILE" 2>/dev/null
 
   # 停止代理服务器
   if [ -n "${PROXY_PID:-}" ]; then
@@ -534,6 +540,7 @@ cleanup() {
   fi
 
   # 切换到项目根目录
+  # shellcheck disable=SC2164
   cd "$PROJECT_ROOT"
 
   # 清理 npmRegistryServer 配置
@@ -548,16 +555,21 @@ cleanup() {
 trap 'cleanup 1' SIGINT SIGTERM EXIT  # 异常退出时调用 cleanup，退出码为 1
 
 # 切换到项目根目录
+# shellcheck disable=SC2164
 cd "$PROJECT_ROOT"
 
-# 使用 yarn dlx 直接运行 registry-proxy，放入后台运行
+# 使用 yarn dlx 直接运行 registry-proxy，可通过环境变量指定registry-proxy版本号，默认是latest，registry-proxy将会被放入后台运行，并在安装结束后自动退出。
 REGISTRY_PROXY_VERSION="${REGISTRY_PROXY_VERSION:-latest}"
 echo "Starting registry-proxy@$REGISTRY_PROXY_VERSION in the background (logs will be displayed below)..."
-yarn dlx com.jimuwd.xian.registry-proxy@"$REGISTRY_PROXY_VERSION" .registry-proxy.yml .yarnrc.yml ~/.yarnrc.yml &
+# 下载registry-proxy临时可执行程序并运行  因yarn可能会缓存tarball url的缘故（yarn.lock内<package>.resolution值），这里不得已只能写死本地代理端口地址，以便无论是从缓存获取tarball url还是从代理服务提供的元数据获取tarball url地址都能成功下载tarball文件
+# 但是注意 这个端口不能暴露到外部使用，只允许本地使用，避免不必要的安全隐患 事实上registry-proxy server也是只监听着::1本机端口的。
+yarn dlx com.jimuwd.xian.registry-proxy@"$REGISTRY_PROXY_VERSION" .registry-proxy.yml .yarnrc.yml ~/.yarnrc.yml 40061 &
 PROXY_PID=$!
 
 # 等待代理服务器启动并写入端口，最多 30 秒
 echo "Waiting for proxy server to start (up to 30 seconds)..."
+PORT_FILE="$PROJECT_ROOT/.registry-proxy-port"
+# shellcheck disable=SC2034
 for i in {1..300}; do  # 300 次循环，每次 0.1 秒，总共 30 秒
   if [ -f "$PORT_FILE" ]; then
     PROXY_PORT=$(cat "$PORT_FILE")
@@ -586,9 +598,9 @@ if [ -z "${PROXY_PORT:-}" ] || ! nc -z localhost "$PROXY_PORT" 2>/dev/null; then
   cleanup 1
 fi
 
-# 动态设置 npmRegistryServer 为代理地址
-yarn config set npmRegistryServer "http://localhost:$PROXY_PORT/"
-echo "Set npmRegistryServer to http://localhost:$PROXY_PORT/"
+# 动态设置 npmRegistryServer 为代理地址 注意：yarn对“localhost”域名不友好，请直接使用 [::1]
+yarn config set npmRegistryServer "http://[::1]:$PROXY_PORT"
+echo "Set npmRegistryServer to http://[::1]:$PROXY_PORT"
 
 # 使用动态代理端口运行 yarn install，并捕获错误
 if ! yarn install; then
