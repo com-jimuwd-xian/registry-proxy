@@ -483,12 +483,13 @@ export async function startProxyServer(
         server.on('connection', connectionHandler);
         // 为了代理服务器的安全性，暂时只监听本机ipv6地址【::1】，不能对本机之外暴露本代理服务地址避免造成安全隐患
         // 注意：截止目前yarn客户端如果通过localhost:<port>来访问本服务，可能会报错ECONNREFUSED错误码，原因是yarn客户端环境解析“localhost”至多个地址，它会尝试轮询每个地址。
-        const listenOptions: ListenOptions = {port, host: '::1', ipv6Only: true};
+        const ipv6OnlyHost = '::1';
+        const listenOptions: ListenOptions = {port, host: ipv6OnlyHost, ipv6Only: true};
         server.listen(listenOptions, async () => {
             const addressInfo = server.address() as AddressInfo;
             port = addressInfo.port;// 回写上层局部变量
             await writePortFile(port);
-            logger.info(`Proxy server running on ${proxyInfo.https ? 'https' : 'http'}://localhost:${addressInfo.port}${basePathPrefixedWithSlash === '/' ? '' : basePathPrefixedWithSlash}`);
+            logger.info(`Proxy server running on ${proxyInfo.https ? 'https' : 'http'}://${ipv6OnlyHost}:${port}${basePathPrefixedWithSlash === '/' ? '' : basePathPrefixedWithSlash}`);
             resolve(server);
         });
     });
