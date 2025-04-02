@@ -489,7 +489,7 @@ export async function startProxyServer(
             const addressInfo = server.address() as AddressInfo;
             port = addressInfo.port;// 回写上层局部变量
             await writePortFile(port);
-            logger.info(`Proxy server running on ${proxyInfo.https ? 'https' : 'http'}://${ipv6OnlyHost}:${port}${basePathPrefixedWithSlash === '/' ? '' : basePathPrefixedWithSlash}`);
+            logger.info(`Proxy server running on ${proxyInfo.https ? 'https' : 'http'}://[${ipv6OnlyHost}]:${port}${basePathPrefixedWithSlash === '/' ? '' : basePathPrefixedWithSlash}`);
             resolve(server);
         });
     });
