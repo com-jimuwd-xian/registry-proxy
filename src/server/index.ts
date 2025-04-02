@@ -268,7 +268,7 @@ async function writeResponseToDownstreamClient(
                 const safeHeaders: Map<string, number | string | readonly string[]> = new Map<string, number | string | readonly string[]>();
                 // 复制所有可能需要的头信息（不包含安全相关的敏感头信息，如access-control-allow-origin、set-cookie、server、strict-transport-security等，这意味着代理服务器向下游客户端屏蔽了这些认证等安全数据）
                 // 也不能包含cf-cache-status、cf-ray（Cloudflare 特有字段）可能干扰客户端解析。
-                const headersToCopy = ['cache-control', 'etag', 'last-modified', 'vary', 'content-encoding'];
+                const headersToCopy = ['cache-control', 'etag', 'last-modified', 'vary','connection','keep-alive', 'content-encoding'];
                 headersToCopy.forEach(header => {
                     const value = upstreamResponse.headers.get(header);
                     if (value) safeHeaders.set(header, value);
@@ -278,9 +278,9 @@ async function writeResponseToDownstreamClient(
                 resToDownstreamClient.setHeader("content-type", contentType);
                 resToDownstreamClient.removeHeader('content-length');
                 resToDownstreamClient.setHeader('transfer-encoding', 'chunked');
-                // 默认是 connection: keep-alive 和 keep-alive: timeout=5，这里直接给它咔嚓掉
+                /* 这两个header使用upstream透传过来的header即可
                 resToDownstreamClient.setHeader('connection', 'close');
-                resToDownstreamClient.removeHeader('Keep-Alive');
+                resToDownstreamClient.removeHeader('Keep-Alive');*/
                 logger.info(`Response to downstream client headers`, JSON.stringify(resToDownstreamClient.getHeaders()), targetUrl);
                 // 不再writeHead()而是设置状态码，然后执行pipe操作
                 resToDownstreamClient.statusCode = upstreamResponse.status;
