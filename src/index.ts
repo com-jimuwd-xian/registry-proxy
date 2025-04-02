@@ -1,17 +1,19 @@
 #!/usr/bin/env node
 import http, {createServer, IncomingMessage, Server as HttpServer, ServerResponse} from 'node:http';
 import https, {createServer as createHttpsServer, Server as HttpsServer} from 'node:https';
-import {promises as fsPromises, readFileSync} from 'fs';
-import {AddressInfo, ListenOptions} from 'net';
+import {promises as fsPromises, readFileSync} from 'node:fs';
+import {AddressInfo, ListenOptions} from 'node:net';
 import {load} from 'js-yaml';
 import fetch, {HeadersInit, Response} from 'node-fetch';
 import {homedir} from 'os';
 import {join, resolve} from 'path';
 import {URL} from 'url';
-import logger from "./utils/logger.js";
 import {IncomingHttpHeaders} from "http";
-import ConcurrencyLimiter from "./utils/ConcurrencyLimiter.js";
 import {ServerOptions as HttpsServerOptions} from "https";
+import logger from "./utils/logger.js";
+import ConcurrencyLimiter from "./utils/ConcurrencyLimiter.js";
+import {gracefulShutdown} from "./gracefullShutdown.js";
+import {writePortFile} from "./port.js";
 
 const {readFile, writeFile} = fsPromises;
 
@@ -97,19 +99,20 @@ function removeRegistryPrefix(tarballUrl: string, registries: RegistryInfo[]): s
 }
 
 async function readProxyConfig(proxyConfigPath = './.registry-proxy.yml'): Promise<ProxyConfig> {
+    let config: ProxyConfig | undefined = undefined;
     const resolvedPath = resolvePath(proxyConfigPath);
     try {
         const content = await readFile(resolvedPath, 'utf8');
-        const config = load(content) as ProxyConfig;
-        if (!config.registries) {
-            logger.error('Missing required "registries" field in config');
-            process.exit(1);
-        }
-        return config;
+        config = load(content) as ProxyConfig;
     } catch (e) {
         logger.error(`Failed to load proxy config from ${resolvedPath}:`, e);
-        process.exit(1);
+        await gracefulShutdown();
     }
+    if (!config?.registries) {
+        logger.error('Missing required "registries" field in config');
+        await gracefulShutdown();
+    }
+    return config as ProxyConfig;
 }
 
 async function readYarnConfig(path: string): Promise<YarnConfig> {
@@ -232,7 +235,7 @@ async function writeResponseToDownstreamClient(
             const data = await upstreamResponse.json() as PackageData;
             if (data.versions) { // 处理node依赖包元数据
                 logger.info("Write package meta data application/json response from upstream to downstream", targetUrl);
-                const host = reqFromDownstreamClient.headers.host || `127.0.0.1:${proxyPort}`;
+                const host = reqFromDownstreamClient.headers.host /*|| `[::1]:${proxyPort}`*/;
                 const baseUrl = `${proxyInfo.https ? 'https' : 'http'}://${host}${proxyInfo.basePath === '/' ? '' : proxyInfo.basePath}`;
                 for (const versionKey in data.versions) {
                     const packageVersion = data.versions[versionKey];
@@ -359,7 +362,6 @@ function getDownstreamClientIp(req: IncomingMessage) {
     return req.socket.remoteAddress;
 }
 
-// deprecated 出于安全考虑只监听::1地址，废弃本注释：同时启动ipv6,ipv4监听，比如当客户端访问http://localhost:port时，无论客户端DNS解析到IPV4-127.0.0.1还是IPV6-::1地址，咱server都能轻松应对！
 export async function startProxyServer(
     proxyConfigPath?: string,
     localYarnConfigPath?: string,
@@ -433,7 +435,6 @@ export async function startProxyServer(
     };
 
 
-    // deprecated 废弃本注释：需要同时启动ipv6,ipv4监听，比如当客户端访问http://localhost:port时，无论客户端DNS解析到IPV4-127.0.0.1还是IPV6-::1地址，咱server都能轻松应对！
     let server: HttpServer | HttpsServer;
     if (proxyInfo.https) {
         const {key, cert} = proxyInfo.https;
@@ -484,11 +485,10 @@ export async function startProxyServer(
         // 为了代理服务器的安全性，暂时只监听本机ipv6地址【::1】，不能对本机之外暴露本代理服务地址避免造成安全隐患
         // 注意：截止目前yarn客户端如果通过localhost:<port>来访问本服务，可能会报错ECONNREFUSED错误码，原因是yarn客户端环境解析“localhost”至多个地址，它会尝试轮询每个地址。
         const listenOptions: ListenOptions = {port, host: '::1', ipv6Only: true};
-        server.listen(listenOptions, () => {
+        server.listen(listenOptions, async () => {
             const addressInfo = server.address() as AddressInfo;
             port = addressInfo.port;// 回写上层局部变量
-            const portFile = join(process.env.PROJECT_ROOT || process.cwd(), '.registry-proxy-port');
-            writeFile(portFile, addressInfo.port.toString()).catch(e => logger.error(`Failed to write port file: ${portFile}`, e));
+            await writePortFile(port);
             logger.info(`Proxy server running on ${proxyInfo.https ? 'https' : 'http'}://localhost:${addressInfo.port}${basePathPrefixedWithSlash === '/' ? '' : basePathPrefixedWithSlash}`);
             resolve(server);
         });
