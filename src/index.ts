@@ -482,6 +482,7 @@ export async function startProxyServer(
         server.on('error', errHandler/*this handler will call 'reject'*/);
         server.on('connection', connectionHandler);
         // 为了代理服务器的安全性，暂时只监听本机ipv6地址【::1】，不能对本机之外暴露本代理服务地址避免造成安全隐患
+        // 注意：截止目前yarn客户端如果通过localhost:<port>来访问本服务，可能会报错ECONNREFUSED错误码，原因是yarn客户端环境解析“localhost”至多个地址，它会尝试轮询每个地址。
         const listenOptions: ListenOptions = {port, host: '::1', ipv6Only: true};
         server.listen(listenOptions, () => {
             const addressInfo = server.address() as AddressInfo;
