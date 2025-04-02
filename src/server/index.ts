@@ -180,16 +180,16 @@ async function fetchFromRegistry(
         // 替换“Host”头为upstream的host
         const upstreamHost = new URL(registry.normalizedRegistryUrl).host;
         if (mergedHeaders.host) {
-            logger.info(`Replace 'Host=${mergedHeaders.host}' header in downstream request to upstream 'Host=${upstreamHost}' header when proxying to upstream ${targetUrl}.`);
+            logger.debug(() => `Replace 'Host=${mergedHeaders.host}' header in downstream request to upstream 'Host=${upstreamHost}' header when proxying to upstream ${targetUrl}.`);
             mergedHeaders.host = upstreamHost;
         }
         const response = await fetch(targetUrl, {headers: mergedHeaders as HeadersInit});
         if (response.ok) {
-            logger.debug(`Success response from upstream ${targetUrl}: ${response.status} ${response.statusText}
+            logger.debug(() => `Success response from upstream ${targetUrl}: ${response.status} ${response.statusText}
             content-type=${response.headers.get('content-type')} content-encoding=${response.headers.get('content-encoding')} content-length=${response.headers.get('content-length')} transfer-encoding=${response.headers.get('transfer-encoding')}`);
             return response;
         } else {
-            logger.info(`Failure response from upstream ${targetUrl}: ${response.status} ${response.statusText} 
+            logger.debug(async () => `Failure response from upstream ${targetUrl}: ${response.status} ${response.statusText} 
             content-type=${response.headers.get('content-type')} content-encoding=${response.headers.get('content-encoding')} content-length=${response.headers.get('content-length')} transfer-encoding=${response.headers.get('transfer-encoding')}
             body=${await response.text()}`);
             return null;
@@ -221,7 +221,7 @@ async function writeResponseToDownstreamClient(
     registryInfos: RegistryInfo[]
 ): Promise<void> {
 
-    logger.info(`Writing upstream registry server ${registryInfo.normalizedRegistryUrl}'s ${upstreamResponse.status}${upstreamResponse.statusText ? (' "' + upstreamResponse.statusText + '"') : ''} response to downstream client.`)
+    logger.debug(() => `Writing upstream registry server ${registryInfo.normalizedRegistryUrl}'s ${upstreamResponse.status}${upstreamResponse.statusText ? (' "' + upstreamResponse.statusText + '"') : ''} response to downstream client.`)
 
     if (!upstreamResponse.ok) throw new Error("Only 2xx upstream response is supported");
 
@@ -233,7 +233,7 @@ async function writeResponseToDownstreamClient(
         } else if (contentType.includes('application/json')) { // JSON 处理逻辑
             const data = await upstreamResponse.json() as PackageData;
             if (data.versions) { // 处理node依赖包元数据
-                logger.info("Write package meta data application/json response from upstream to downstream", targetUrl);
+                logger.debug(() => "Write package meta data application/json response from upstream to downstream", targetUrl);
                 const host = reqFromDownstreamClient.headers.host /*|| `[::1]:${_proxyPort}`*/;
                 const baseUrl = `${proxyInfo.https ? 'https' : 'http'}://${host}${proxyInfo.basePath === '/' ? '' : proxyInfo.basePath}`;
                 for (const versionKey in data.versions) {
@@ -259,7 +259,7 @@ async function writeResponseToDownstreamClient(
             logger.info(`Response to downstream client headers`, JSON.stringify(resToDownstreamClient.getHeaders()), targetUrl);
             resToDownstreamClient.writeHead(upstreamResponse.status).end(bodyData);
         } else if (contentType.includes('application/octet-stream')) { // 二进制流处理
-            logger.info("Write application/octet-stream response from upstream to downstream", targetUrl);
+            logger.debug(() => `Write application/octet-stream response from upstream to downstream, upstream url is ${targetUrl}`);
             if (!upstreamResponse.body) {
                 logger.error(`Empty response body from upstream ${targetUrl}`);
                 resToDownstreamClient.writeHead(502).end('Empty Upstream Response');
@@ -268,7 +268,7 @@ async function writeResponseToDownstreamClient(
                 const safeHeaders: Map<string, number | string | readonly string[]> = new Map<string, number | string | readonly string[]>();
                 // 复制所有可能需要的头信息（不包含安全相关的敏感头信息，如access-control-allow-origin、set-cookie、server、strict-transport-security等，这意味着代理服务器向下游客户端屏蔽了这些认证等安全数据）
                 // 也不能包含cf-cache-status、cf-ray（Cloudflare 特有字段）可能干扰客户端解析。
-                const headersToCopy = ['cache-control', 'etag', 'last-modified', 'vary','connection','keep-alive', 'content-encoding'];
+                const headersToCopy = ['cache-control', 'etag', 'last-modified', 'vary', 'connection', 'keep-alive', 'content-encoding'];
                 headersToCopy.forEach(header => {
                     const value = upstreamResponse.headers.get(header);
                     if (value) safeHeaders.set(header, value);
@@ -289,7 +289,7 @@ async function writeResponseToDownstreamClient(
                 // this is good when proxying big stream from upstream to downstream.
                 const cleanup = () => {
                     reqFromDownstreamClient.off('close', cleanup);
-                    logger.info(`Req from downstream client is closed, stop pipe from upstream ${targetUrl} to downstream client.`);
+                    logger.debug(() => `Req from downstream client is closed, stop pipe from upstream ${targetUrl} to downstream client.`);
                     upstreamResponse.body?.unpipe();
                 };
                 reqFromDownstreamClient.on('close', cleanup);
@@ -297,7 +297,7 @@ async function writeResponseToDownstreamClient(
                 // clean up when server closes connection to downstream client.
                 const cleanup0 = () => {
                     resToDownstreamClient.off('close', cleanup0);
-                    logger.info(`Close connection to downstream client, upstream url is ${targetUrl}`);
+                    logger.debug(() => `Close connection to downstream client, upstream url is ${targetUrl}`);
                     // upstreamResponse.body?.unpipe();
                 }
                 resToDownstreamClient.on('close', cleanup0);
@@ -305,10 +305,10 @@ async function writeResponseToDownstreamClient(
                 // pipe upstream body-stream to downstream stream and automatically ends the stream to downstream when upstream stream is ended.
                 upstreamResponse.body.pipe(resToDownstreamClient, {end: true});
                 upstreamResponse.body
-                    .on('data', (chunk) => logger.debug(`Chunk transferred from ${targetUrl} to downstream client size=${chunk.length}`))
-                    .on('end', () => logger.info(`Upstream server ${targetUrl} response.body ended.`))
+                    .on('data', (chunk) => logger.info(`Chunk transferred from ${targetUrl} to downstream client size=${Buffer.byteLength(chunk)}bytes`))
+                    .on('end', () => logger.info(`Upstream server ${targetUrl} response.body stream ended.`))
                     // connection will be closed automatically when all chunk data is transferred (after stream ends).
-                    .on('close', () => logger.info(`Upstream server ${targetUrl} closed connection.`))
+                    .on('close', () => logger.debug(() => `Upstream ${targetUrl} closed stream.`))
                     .on('error', (err: Error) => {
                         const errMsg = `Stream error between upstream and registry-proxy server: ${err.message}. Upstream url is ${targetUrl}`;
                         logger.error(errMsg);
@@ -325,7 +325,7 @@ async function writeResponseToDownstreamClient(
             resToDownstreamClient.removeHeader('Keep-Alive');
             resToDownstreamClient.setHeader('content-type', contentType);
             resToDownstreamClient.setHeader('content-length', Buffer.byteLength(bodyData));
-            logger.info(`Response to downstream client headers`, JSON.stringify(resToDownstreamClient.getHeaders()), `Upstream url is ${targetUrl}`);
+            logger.debug(() => `Response to downstream client headers ${JSON.stringify(resToDownstreamClient.getHeaders())} Upstream url is ${targetUrl}`);
             resToDownstreamClient.writeHead(upstreamResponse.status).end(bodyData);
         }
     } catch (err) {
