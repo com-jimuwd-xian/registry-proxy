@@ -47,4 +47,19 @@ export async function isPortConnectable(
     });
 }
 
-export default {isPortFree, isPortConnectable,}
+/**
+ * 简单的检查，若需要更高级的检查，请使用{@link isPortConnectable}
+ */
+async function checkPortListening(port: number): Promise<boolean> {
+    return new Promise(resolve => {
+        const socket = new net.Socket();
+        socket.on('error', () => resolve(false));
+        socket.on('connect', () => {
+            socket.destroy();
+            resolve(true);
+        });
+        socket.connect({port, host: '::1'});
+    });
+}
+
+export default {isPortFree, isPortConnectable,checkPortListening}

@@ -51,18 +51,6 @@ async function readPortFile(filePath: string): Promise<number> {
     return port;
 }
 
-async function checkPortListening(port: number): Promise<boolean> {
-    return new Promise(resolve => {
-        const socket = new net.Socket();
-        socket.on('error', () => resolve(false));
-        socket.on('connect', () => {
-            socket.destroy();
-            resolve(true);
-        });
-        socket.connect({port, host: '::1'});
-    });
-}
-
 // Cleanup management
 async function cleanup(exitCode: number = 1): Promise<never> {
     // Run all cleanup handlers in reverse order
@@ -151,14 +139,8 @@ async function main() {
         const PROXY_PORT = await readPortFile(PORT_FILE);
         const portConnectable = await isPortConnectable(PROXY_PORT);
         if (!portConnectable) {
-            throw new Error(`Port ${PROXY_PORT} is already in use by another process`);
-        }
-
-        const isListening = await checkPortListening(PROXY_PORT);
-        if (!isListening) {
             throw new Error(`Proxy server not listening on port ${PROXY_PORT}`);
         }
-        console.log(`Proxy server is ready on port ${PROXY_PORT}!`);
 
         // Configure yarn
         await execa('yarn', ['config', 'set', 'npmRegistryServer', `http://[::1]:${PROXY_PORT}`]);
