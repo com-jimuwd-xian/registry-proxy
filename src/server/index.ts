@@ -217,7 +217,7 @@ async function writeResponseToDownstreamClient(
     upstreamResponse: Response,
     reqFromDownstreamClient: IncomingMessage,
     proxyInfo: ProxyInfo,
-    proxyPort: number,
+    _proxyPort: number,
     registryInfos: RegistryInfo[]
 ): Promise<void> {
 
@@ -234,7 +234,7 @@ async function writeResponseToDownstreamClient(
             const data = await upstreamResponse.json() as PackageData;
             if (data.versions) { // 处理node依赖包元数据
                 logger.info("Write package meta data application/json response from upstream to downstream", targetUrl);
-                const host = reqFromDownstreamClient.headers.host /*|| `[::1]:${proxyPort}`*/;
+                const host = reqFromDownstreamClient.headers.host /*|| `[::1]:${_proxyPort}`*/;
                 const baseUrl = `${proxyInfo.https ? 'https' : 'http'}://${host}${proxyInfo.basePath === '/' ? '' : proxyInfo.basePath}`;
                 for (const versionKey in data.versions) {
                     const packageVersion = data.versions[versionKey];
@@ -249,10 +249,11 @@ async function writeResponseToDownstreamClient(
                 logger.info("Write none meta data application/json response from upstream to downstream", targetUrl);
             }
             const bodyData = JSON.stringify(data);
-            resToDownstreamClient.removeHeader('Transfer-Encoding');
-            // 默认是 connection: keep-alive 和 keep-alive: timeout=5，这里直接给它咔嚓掉
-            resToDownstreamClient.setHeader('Connection', 'close');
-            resToDownstreamClient.removeHeader('Keep-Alive');
+            // remove transfer-encoding = chunked header if present, because the content-length is fixed.
+            resToDownstreamClient.removeHeader('transfer-encoding');
+            /* 默认是 connection: keep-alive 和 keep-alive: timeout=5
+            resToDownstreamClient.setHeader('connection', 'close');
+            resToDownstreamClient.removeHeader('Keep-Alive');*/
             resToDownstreamClient.setHeader('content-type', contentType);
             resToDownstreamClient.setHeader('content-length', Buffer.byteLength(bodyData));
             logger.info(`Response to downstream client headers`, JSON.stringify(resToDownstreamClient.getHeaders()), targetUrl);
@@ -264,43 +265,32 @@ async function writeResponseToDownstreamClient(
                 resToDownstreamClient.writeHead(502).end('Empty Upstream Response');
             } else {
                 // write back to client
-                // 准备通用响应头信息
                 const safeHeaders: Map<string, number | string | readonly string[]> = new Map<string, number | string | readonly string[]>();
-                safeHeaders.set("Content-Type", contentType);
                 // 复制所有可能需要的头信息（不包含安全相关的敏感头信息，如access-control-allow-origin、set-cookie、server、strict-transport-security等，这意味着代理服务器向下游客户端屏蔽了这些认证等安全数据）
                 // 也不能包含cf-cache-status、cf-ray（Cloudflare 特有字段）可能干扰客户端解析。
-                const headersToCopy = ['cache-control', 'connection', 'content-encoding', 'content-length', /*'date',*/ 'etag', 'last-modified', 'transfer-encoding', 'vary',];
+                const headersToCopy = ['cache-control', 'etag', 'last-modified', 'vary', 'content-encoding'];
                 headersToCopy.forEach(header => {
                     const value = upstreamResponse.headers.get(header);
                     if (value) safeHeaders.set(header, value);
                 });
-                // 必须使用 ServerResponse.setHeaders(safeHeaders)来覆盖现有headers而不是ServerResponse.writeHead(status,headers)来合并headers！
-                // 这个坑害我浪费很久事件来调试！
+                // 强制设置二进制流传输的响应头，需要使用 ServerResponse.setHeaders(safeHeaders)来覆盖现有headers而不是ServerResponse.writeHead(status,headers)来合并headers，避免不必要的麻烦
                 resToDownstreamClient.setHeaders(safeHeaders);
-
-                // 调试代码
-                resToDownstreamClient.removeHeader('content-encoding');
-                resToDownstreamClient.removeHeader('Transfer-Encoding');
+                resToDownstreamClient.setHeader("content-type", contentType);
                 resToDownstreamClient.removeHeader('content-length');
                 resToDownstreamClient.setHeader('transfer-encoding', 'chunked');
                 // 默认是 connection: keep-alive 和 keep-alive: timeout=5，这里直接给它咔嚓掉
-                resToDownstreamClient.removeHeader('connection');
                 resToDownstreamClient.setHeader('connection', 'close');
                 resToDownstreamClient.removeHeader('Keep-Alive');
-                resToDownstreamClient.removeHeader('content-type');
-                resToDownstreamClient.setHeader('content-type', contentType);
-
-
                 logger.info(`Response to downstream client headers`, JSON.stringify(resToDownstreamClient.getHeaders()), targetUrl);
                 // 不再writeHead()而是设置状态码，然后执行pipe操作
                 resToDownstreamClient.statusCode = upstreamResponse.status;
                 resToDownstreamClient.statusMessage = upstreamResponse.statusText;
-                // resToDownstreamClient.writeHead(upstreamResponse.status);
                 // stop pipe when req from client is closed accidentally.
+                // this is good when proxying big stream from upstream to downstream.
                 const cleanup = () => {
                     reqFromDownstreamClient.off('close', cleanup);
                     logger.info(`Req from downstream client is closed, stop pipe from upstream ${targetUrl} to downstream client.`);
-                    // upstreamResponse.body?.unpipe();
+                    upstreamResponse.body?.unpipe();
                 };
                 reqFromDownstreamClient.on('close', cleanup);
                 reqFromDownstreamClient.on('end', () => logger.info("Req from downstream client ends."));
@@ -312,35 +302,30 @@ async function writeResponseToDownstreamClient(
                 }
                 resToDownstreamClient.on('close', cleanup0);
                 // write back body data (chunked probably)
-                // pipe upstream body to downstream client
+                // pipe upstream body-stream to downstream stream and automatically ends the stream to downstream when upstream stream is ended.
                 upstreamResponse.body.pipe(resToDownstreamClient, {end: true});
                 upstreamResponse.body
                     .on('data', (chunk) => logger.debug(`Chunk transferred from ${targetUrl} to downstream client size=${chunk.length}`))
-                    .on('end', () => {
-                        logger.info(`Upstream server ${targetUrl} response.body ended.`);
-                        // resToDownstreamClient.end();
-                    })
+                    .on('end', () => logger.info(`Upstream server ${targetUrl} response.body ended.`))
                     // connection will be closed automatically when all chunk data is transferred (after stream ends).
-                    .on('close', () => {
-                        logger.info(`Upstream server ${targetUrl} closed connection.`);
-                    })
+                    .on('close', () => logger.info(`Upstream server ${targetUrl} closed connection.`))
                     .on('error', (err: Error) => {
-                        const errMsg = `Stream error: ${err.message}`;
+                        const errMsg = `Stream error between upstream and registry-proxy server: ${err.message}. Upstream url is ${targetUrl}`;
                         logger.error(errMsg);
                         resToDownstreamClient.destroy(new Error(errMsg, {cause: err,}));
                         reqFromDownstreamClient.destroy(new Error(errMsg, {cause: err,}));
                     });
             }
         } else {
-            logger.warn(`Write unsupported content-type=${contentType} response from upstream to downstream ${targetUrl}`);
+            logger.warn(`Write unsupported content-type=${contentType} response from upstream to downstream. Upstream url is ${targetUrl}`);
             const bodyData = await upstreamResponse.text();
-            resToDownstreamClient.removeHeader('Transfer-Encoding');
+            resToDownstreamClient.removeHeader('transfer-encoding');
             // 默认是 connection: keep-alive 和 keep-alive: timeout=5，这里直接给它咔嚓掉
-            resToDownstreamClient.setHeader('Connection', 'close');
+            resToDownstreamClient.setHeader('connection', 'close');
             resToDownstreamClient.removeHeader('Keep-Alive');
             resToDownstreamClient.setHeader('content-type', contentType);
             resToDownstreamClient.setHeader('content-length', Buffer.byteLength(bodyData));
-            logger.info(`Response to downstream client headers`, JSON.stringify(resToDownstreamClient.getHeaders()), targetUrl);
+            logger.info(`Response to downstream client headers`, JSON.stringify(resToDownstreamClient.getHeaders()), `Upstream url is ${targetUrl}`);
             resToDownstreamClient.writeHead(upstreamResponse.status).end(bodyData);
         }
     } catch (err) {
