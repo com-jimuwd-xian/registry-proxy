@@ -14,6 +14,7 @@ import logger from "../utils/logger.js";
 import ConcurrencyLimiter from "../utils/ConcurrencyLimiter.js";
 import {gracefulShutdown, registerProcessShutdownHook} from "./gracefullShutdown.js";
 import {writePortFile} from "../port.js";
+import resolveEnvValue from "../utils/resolveEnvValue.js";
 
 const {readFile} = fsPromises;
 
@@ -98,6 +99,11 @@ function removeRegistryPrefix(tarballUrl: string, registries: RegistryInfo[]): s
     throw new Error(`Can't find tarball url ${tarballUrl} does not match given registries ${normalizedRegistries}`)
 }
 
+/**
+ * 读取yml配置文件得到配置值对象{@link ProxyConfig}
+ * @note 本读取操作不会解析环境变量值
+ * @param proxyConfigPath 配置文件路径
+ */
 async function readProxyConfig(proxyConfigPath = './.registry-proxy.yml'): Promise<ProxyConfig> {
     let config: ProxyConfig | undefined = undefined;
     const resolvedPath = resolvePath(proxyConfigPath);
@@ -115,6 +121,10 @@ async function readProxyConfig(proxyConfigPath = './.registry-proxy.yml'): Promi
     return config as ProxyConfig;
 }
 
+/**
+ * 读取yml配置文件为yml对象
+ * @param path yml文件路径
+ */
 async function readYarnConfig(path: string): Promise<YarnConfig> {
     try {
         const content = await readFile(resolvePath(path), 'utf8');
@@ -138,7 +148,7 @@ async function loadProxyInfo(
     const registryMap = new Map<string, RegistryInfo>();
     for (const [proxiedRegUrl, proxyRegConfig] of Object.entries(proxyConfig.registries)) {
         const normalizedProxiedRegUrl = normalizeUrl(proxiedRegUrl);
-        let token = proxyRegConfig?.npmAuthToken;
+        let token = resolveEnvValue(proxyRegConfig?.npmAuthToken);
         if (!token) {
             const yarnConfigs = [localYarnConfig, globalYarnConfig];
             for (const yarnConfig of yarnConfigs) {
@@ -148,6 +158,7 @@ async function loadProxyInfo(
                     if (foundEntry) {
                         const [, registryConfig] = foundEntry;
                         if (registryConfig?.npmAuthToken) {
+                            // .yarnrc.yml内的配置值，暂时不处理环境变量值，未来按需扩展
                             token = registryConfig.npmAuthToken;
                             break;
                         }
@@ -155,7 +166,10 @@ async function loadProxyInfo(
                 }
             }
         }
-        registryMap.set(normalizedProxiedRegUrl, {normalizedRegistryUrl: normalizedProxiedRegUrl, token});
+        registryMap.set(normalizedProxiedRegUrl, {
+            normalizedRegistryUrl: normalizedProxiedRegUrl,
+            token: token ? token : undefined
+        });
     }
     const registries = Array.from(registryMap.values());
     const https = proxyConfig.https;
