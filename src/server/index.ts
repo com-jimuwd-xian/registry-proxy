@@ -347,7 +347,7 @@ async function writeResponseToDownstreamClient(
             resToDownstreamClient.writeHead(upstreamResponse.status).end(bodyData);
         }
     } catch (err) {
-        logger.error('Failed to write upstreamResponse:', err);
+        logger.error('Failed to transfer upstream response to downstream client', err);
         if (!resToDownstreamClient.headersSent) {
             resToDownstreamClient.writeHead(502).end('Internal Server Error');
         }
