@@ -216,9 +216,8 @@ async function fetchFromRegistry(
     } catch (e) {
         if (e instanceof Error) {
             logger.error(
-                (e as any).code === 'ECONNREFUSED'
-                    ? `Registry ${registry.normalizedRegistryUrl} unreachable [ECONNREFUSED]`
-                    : `Error from ${registry.normalizedRegistryUrl}: ${e.message}`
+                (e as any).code === 'ECONNREFUSED' ? `Upstream ${targetUrl} unreachable [ECONNREFUSED]`
+                    : `Error fetching from ${targetUrl}, ${e.message}`
                 , e);
         } else {
             logger.error("Unknown error", e);
