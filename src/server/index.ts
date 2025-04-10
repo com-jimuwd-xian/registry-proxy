@@ -480,7 +480,7 @@ export async function startProxyServer(
         const connectionHandler = (socket: any) => {
             socket.setTimeout(60000);
             socket.setKeepAlive(true, 30000);
-            logger.info("Server on connection", socket);
+            logger.debug(() => "Server on connection",);
         };
         server.on('error', errHandler/*this handler will call 'reject'*/);
         server.on('connection', connectionHandler);
