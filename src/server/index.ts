@@ -56,7 +56,7 @@ interface PackageData {
     versions?: Record<string, PackageVersion>;
 }
 
-const limiter = new ConcurrencyLimiter(Infinity);
+const limiter = new ConcurrencyLimiter(10);
 
 function removeEndingSlashAndForceStartingSlash(str: string | undefined | null): string {
     if (!str) return '/';
