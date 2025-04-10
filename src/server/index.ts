@@ -219,7 +219,7 @@ async function fetchFromRegistry(
                 (e as any).code === 'ECONNREFUSED'
                     ? `Registry ${registry.normalizedRegistryUrl} unreachable [ECONNREFUSED]`
                     : `Error from ${registry.normalizedRegistryUrl}: ${e.message}`
-            );
+                , e);
         } else {
             logger.error("Unknown error", e);
         }
