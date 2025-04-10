@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import http, {createServer, IncomingMessage, Server as HttpServer, ServerResponse} from 'node:http';
 import https, {createServer as createHttpsServer, Server as HttpsServer} from 'node:https';
-import {promises as fsPromises, readFileSync} from 'node:fs';
+import {existsSync, promises as fsPromises, readFileSync} from 'node:fs';
 import {AddressInfo, ListenOptions} from 'node:net';
 import {load} from 'js-yaml';
 import fetch, {HeadersInit, Response} from 'node-fetch';
@@ -127,8 +127,13 @@ async function readProxyConfig(proxyConfigPath = './.registry-proxy.yml'): Promi
  */
 async function readYarnConfig(path: string): Promise<YarnConfig> {
     try {
-        const content = await readFile(resolvePath(path), 'utf8');
-        return load(content) as YarnConfig;
+        if (existsSync(path)) {
+            const content = await readFile(resolvePath(path), 'utf8');
+            return load(content) as YarnConfig;
+        } else {
+            logger.info(`Skip reading ${path}, because it does not exist.`)
+            return {};
+        }
     } catch (e) {
         logger.warn(`Failed to load Yarn config from ${path}:`, e);
         return {};
@@ -467,16 +472,15 @@ export async function startProxyServer(
     const promisedServer: Promise<HttpServer | HttpsServer> = new Promise((resolve, reject) => {
         const errHandler = async (err: NodeJS.ErrnoException) => {
             if (err.code === 'EADDRINUSE') {
-                logger.error(`Port ${port} is in use, please specify a different port or free it.`, err);
-                await gracefulShutdown();
+                reject(new Error(`Port ${port} is in use, please specify a different port or free it.`, {cause: err,}));
+            } else {
+                reject(new Error('Server error', {cause: err,}));
             }
-            logger.error('Server error:', err);
-            reject(err);
         };
         const connectionHandler = (socket: any) => {
-            logger.info("Server on connection")
             socket.setTimeout(60000);
             socket.setKeepAlive(true, 30000);
+            logger.info("Server on connection", socket);
         };
         server.on('error', errHandler/*this handler will call 'reject'*/);
         server.on('connection', connectionHandler);
