@@ -214,14 +214,21 @@ async function fetchFromRegistry(
             return null;
         }
     } catch (e) {
+        // Fetch form one of the confiured upstream registries failed, this is expected, not error.
         if (e instanceof Error) {
-            logger.error(
-                (e as any).code === 'ECONNREFUSED' ? `Upstream ${targetUrl} unreachable [ECONNREFUSED]`
-                    : `Error fetching from ${targetUrl}, ${e.message}`
-                , e);
+            const errCode = (e as any).code;
+            if (errCode === 'ECONNREFUSED') {
+                logger.info(`Upstream ${targetUrl} refused connection [ECONNREFUSED], skip fetching from registry ${registry.normalizedRegistryUrl}`);
+            } else if (errCode === 'ENOTFOUND') {
+                logger.info(`Unknown upstream domain name in ${targetUrl} [ENOTFOUND], skip fetching from registry ${registry.normalizedRegistryUrl}.`)
+            } else {
+                // other net error code, pring log with stacktrace
+                logger.warn(`Failed to fetch from ${targetUrl}, ${e.message}`, e);
+            }
         } else {
             logger.error("Unknown error", e);
         }
+        // return null means skipping current upstream registry.
         return null;
     } finally {
         limiter.release();
