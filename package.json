@@ -9,7 +9,8 @@
     "yarn-install": "dist/client/yarn-install.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "LICENSE"
   ],
   "scripts": {
     "build": "tsc",
