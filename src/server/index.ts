@@ -202,7 +202,7 @@ async function fetchFromRegistry(
             logger.debug(() => `Replace 'Host=${mergedHeaders.host}' header in downstream request to upstream 'Host=${upstreamHost}' header when proxying to upstream ${targetUrl}.`);
             mergedHeaders.host = upstreamHost;
         }
-        const response = await fetch(targetUrl, {headers: mergedHeaders as HeadersInit});
+        const response = await fetch(targetUrl, {headers: mergedHeaders as HeadersInit, redirect: 'manual'},);
         if (response.ok) {
             logger.debug(() => `Success response from upstream ${targetUrl}: ${response.status} ${response.statusText}
             content-type=${response.headers.get('content-type')} content-encoding=${response.headers.get('content-encoding')} content-length=${response.headers.get('content-length')} transfer-encoding=${response.headers.get('transfer-encoding')}`);
