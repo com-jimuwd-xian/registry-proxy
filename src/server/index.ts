@@ -350,7 +350,7 @@ async function writeResponseToDownstreamClient(
                 // pipe upstream body-stream to downstream stream and automatically ends the stream to downstream when upstream stream is ended.
                 upstreamResponse.body.pipe(resToDownstreamClient, {end: true});
                 upstreamResponse.body
-                    .on('data', (chunk) => logger.info(`Chunk transferred from ${targetUrl} to downstream client size=${Buffer.byteLength(chunk)}bytes`))
+                    .on('data', (chunk) => logger.debug(() => `Chunk transferred from ${targetUrl} to downstream client size=${Buffer.byteLength(chunk)}bytes`))
                     .on('end', () => logger.info(`Upstream server ${targetUrl} response.body stream ended.`))
                     // connection will be closed automatically when all chunk data is transferred (after stream ends).
                     .on('close', () => logger.debug(() => `Upstream ${targetUrl} closed stream.`))
