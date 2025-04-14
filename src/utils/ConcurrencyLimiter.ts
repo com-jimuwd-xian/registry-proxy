@@ -2,61 +2,59 @@ export default class ReentrantConcurrencyLimiter {
     readonly maxConcurrency: number;
     private current: number = 0;
     private queue: Array<() => void> = [];
-    private executionContext = new WeakMap<object, number>();
+    private executionStack: Array<{ contextId: symbol; depth: number }> = [];
 
     constructor(maxConcurrency: number) {
-        if (maxConcurrency <= 0) throw new Error("maxConcurrency must be positive");
+        if (maxConcurrency <= 0) {
+            throw new Error("maxConcurrency must be positive");
+        }
         this.maxConcurrency = maxConcurrency;
     }
 
-    private getContextId(): object {
-        return {}; // 每次调用生成唯一对象引用
+    private getContextId(): symbol {
+        return Symbol('context');
     }
 
     async acquire(): Promise<void> {
         const contextId = this.getContextId();
-        const depth = this.executionContext.get(contextId) || 0;
+        const existingContext = this.executionStack.find(c => c.contextId === contextId);
 
-        if (depth > 0) {
-            this.executionContext.set(contextId, depth + 1);
+        if (existingContext) {
+            existingContext.depth++;
             return;
         }
 
         if (this.current < this.maxConcurrency) {
             this.current++;
-            this.executionContext.set(contextId, 1);
+            this.executionStack.push({contextId, depth: 1});
             return;
         }
 
         return new Promise((resolve) => {
             this.queue.push(() => {
                 this.current++;
-                this.executionContext.set(contextId, 1);
+                this.executionStack.push({contextId, depth: 1});
                 resolve();
             });
         });
     }
 
     release(): void {
-        const contextId = this.getContextId();
-        const depth = this.executionContext.get(contextId);
-
-        if (depth === undefined) {
+        if (this.executionStack.length === 0) {
             throw new Error("release() called without acquire()");
         }
 
-        if (depth > 1) {
-            this.executionContext.set(contextId, depth - 1);
-            return;
-        }
+        const lastContext = this.executionStack[this.executionStack.length - 1];
+        lastContext.depth--;
 
-        this.executionContext.delete(contextId);
-        this.current--;
+        if (lastContext.depth === 0) {
+            this.executionStack.pop();
+            this.current--;
 
-        if (this.queue.length > 0) {
-            const next = this.queue.shift()!;
-            // 仍异步执行，但需确保顺序
-            Promise.resolve().then(next);
+            if (this.queue.length > 0) {
+                const next = this.queue.shift();
+                if (next) next();
+            }
         }
     }
 
