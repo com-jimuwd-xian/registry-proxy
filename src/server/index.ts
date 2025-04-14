@@ -259,7 +259,7 @@ async function writeResponseToDownstreamClient(
             const data = await upstreamResponse.json() as PackageData;
             if (data.versions) { // 处理node依赖包元数据
                 logger.debug(() => "Write package meta data application/json response from upstream to downstream", targetUrl);
-                const host = reqFromDownstreamClient.headers.host /*|| `[::1]:${_proxyPort}`*/;
+                const host = reqFromDownstreamClient.headers.host;
                 const baseUrl = `${proxyInfo.https ? 'https' : 'http'}://${host}${proxyInfo.basePath === '/' ? '' : proxyInfo.basePath}`;
                 for (const versionKey in data.versions) {
                     const packageVersion = data.versions[versionKey];

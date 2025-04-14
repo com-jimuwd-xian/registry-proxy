@@ -86,7 +86,7 @@ cd "$PROJECT_ROOT"
 REGISTRY_PROXY_VERSION="${REGISTRY_PROXY_VERSION:-latest}"
 echo "Starting registry-proxy@$REGISTRY_PROXY_VERSION in the background (logs will be displayed below)..."
 # 下载registry-proxy临时可执行程序并运行  因yarn可能会缓存tarball url的缘故（yarn.lock内<package>.resolution值），这里不得已只能写死本地代理端口地址，以便无论是从缓存获取tarball url还是从代理服务提供的元数据获取tarball url地址都能成功下载tarball文件
-# 但是注意 这个端口不能暴露到外部使用，只允许本地使用，避免不必要的安全隐患 事实上registry-proxy server也是只监听着::1本机端口的。
+# 但是注意 这个端口不能暴露到外部使用，只允许本地使用，避免不必要的安全隐患 事实上registry-proxy server也是只监听着127.0.0.1本机端口的。
 yarn dlx -p com.jimuwd.xian.registry-proxy@"$REGISTRY_PROXY_VERSION" registry-proxy .registry-proxy.yml .yarnrc.yml ~/.yarnrc.yml 40061 &
 PROXY_PID=$!
 
@@ -122,9 +122,9 @@ if [ -z "${PROXY_PORT:-}" ] || ! nc -z localhost "$PROXY_PORT" 2>/dev/null; then
   cleanup 1
 fi
 
-# 动态设置 npmRegistryServer 为代理地址 注意：yarn对“localhost”域名不友好，请直接使用 [::1]
-yarn config set npmRegistryServer "http://[::1]:$PROXY_PORT"
-echo "Set npmRegistryServer to http://[::1]:$PROXY_PORT"
+# 动态设置 npmRegistryServer 为代理地址 注意：yarn对“localhost”域名不友好，请直接使用 127.0.0.1
+yarn config set npmRegistryServer "http://127.0.0.1:$PROXY_PORT"
+echo "Set npmRegistryServer to http://127.0.0.1:$PROXY_PORT"
 
 # 使用动态代理端口运行 yarn install，并捕获错误
 if ! yarn install; then

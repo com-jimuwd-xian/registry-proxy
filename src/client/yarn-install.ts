@@ -4,7 +4,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {execa} from 'execa';
-import net from 'node:net';
 import findProjectRoot from "../utils/findProjectRoot.js";
 import {isPortConnectable} from "../utils/portTester.js";
 
@@ -143,8 +142,8 @@ async function main() {
         }
 
         // Configure yarn
-        await execa('yarn', ['config', 'set', 'npmRegistryServer', `http://[::1]:${PROXY_PORT}`]);
-        console.log(`Set npmRegistryServer to http://[::1]:${PROXY_PORT}`);
+        await execa('yarn', ['config', 'set', 'npmRegistryServer', `http://127.0.0.1:${PROXY_PORT}`]);
+        console.log(`Set npmRegistryServer to http://127.0.0.1:${PROXY_PORT}`);
         registerCleanup(async () => {
             try {
                 await execa('yarn', ['config', 'unset', 'npmRegistryServer']);

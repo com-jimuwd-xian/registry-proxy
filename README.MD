@@ -63,7 +63,7 @@ registries:
 
 ```yaml
 unsafeHttpWhitelist:
-  - "[::1]"
+  - "127.0.0.1"
 ```
 
 ### 4. 安装命令
@@ -324,7 +324,7 @@ Create a `.yarnrc.yml` file in your project root to allow Yarn to use the local 
 
 ```yaml
 unsafeHttpWhitelist:
-  - "[::1]"
+  - "127.0.0.1"
 ```
 
 ### 4. install Script
