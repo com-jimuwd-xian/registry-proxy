@@ -56,7 +56,8 @@ interface PackageData {
     versions?: Record<string, PackageVersion>;
 }
 
-const limiter = new ConcurrencyLimiter(5);
+// 整个registry-proxy server实例 使用的全局限流器
+const LIMITER = new ConcurrencyLimiter(5);
 
 function removeEndingSlashAndForceStartingSlash(str: string | undefined | null): string {
     if (!str) return '/';
@@ -182,13 +183,22 @@ async function loadProxyInfo(
     return {registries, https, basePath};
 }
 
+// 有并发限流控制，禁止嵌套调用，否则导致死锁
 async function fetchFromRegistry(
     registry: RegistryInfo,
     targetUrl: string,
     reqFromDownstreamClient: IncomingMessage,
     limiter: ConcurrencyLimiter
 ): Promise<Response | null> {
-    await limiter.acquire();
+    // 并发限流控制
+    return limiter.run(() => _fetchFromRegistry(registry, targetUrl, reqFromDownstreamClient));
+}
+
+async function _fetchFromRegistry(
+    registry: RegistryInfo,
+    targetUrl: string,
+    reqFromDownstreamClient: IncomingMessage,
+): Promise<Response | null> {
     try {
         logger.info(`Fetching from upstream: ${targetUrl}`);
         const headersFromDownstreamClient: IncomingHttpHeaders = reqFromDownstreamClient.headers;
@@ -222,7 +232,7 @@ async function fetchFromRegistry(
             if (redirectedLocation) {
                 logger.info(`${response.status} ${response.statusText} response from upstream ${targetUrl}
                 Fetching from redirected location=${redirectedLocation}`);
-                return await fetchFromRegistry(registry, redirectedLocation, reqFromDownstreamClient, limiter);
+                return await _fetchFromRegistry(registry, redirectedLocation, reqFromDownstreamClient);
             } else {
                 logger.warn(`${response.status} ${response.statusText} response from upstream ${targetUrl}, but redirect location is empty, skip fetching from ${targetUrl}`);
                 // Return null means skipping current upstream registry.
@@ -254,8 +264,6 @@ async function fetchFromRegistry(
         }
         // Return null means skipping current upstream registry.
         return null;
-    } finally {
-        limiter.release();
     }
 }
 
@@ -417,6 +425,7 @@ export async function startProxyServer(
     logger.info('Active registries:', registryInfos.map(r => r.normalizedRegistryUrl));
     logger.info('Proxy base path:', basePathPrefixedWithSlash);
     logger.info('HTTPS:', !!proxyInfo.https);
+    logger.info(`Proxy server request handler rate limit is ${LIMITER.maxConcurrency}`);
 
     const requestHandler = async (reqFromDownstreamClient: IncomingMessage, resToDownstreamClient: ServerResponse) => {
 
@@ -426,8 +435,7 @@ export async function startProxyServer(
         const downstreamRequestedHost = reqFromDownstreamClient.headers.host; // "example.com:8080"
         const downstreamRequestedFullPath = reqFromDownstreamClient.url; //  "/some/path?param=1&param=2"
 
-        logger.info(`Received downstream request from '${downstreamUserAgent}' ${downstreamIp} ${downstreamRequestedHttpMethod} ${downstreamRequestedHost} ${downstreamRequestedFullPath}
-        Proxy server request handler rate limit is ${limiter.maxConcurrency}`);
+        logger.info(`Received downstream request from '${downstreamUserAgent}' ${downstreamIp} ${downstreamRequestedHttpMethod} ${downstreamRequestedHost} ${downstreamRequestedFullPath}`);
 
         if (!downstreamRequestedFullPath || !downstreamRequestedHost) {
             logger.warn(`400 Invalid Request, downstream ${downstreamUserAgent} req.url is absent or downstream.headers.host is absent.`)
@@ -461,7 +469,7 @@ export async function startProxyServer(
                 logger.warn(`Downstream ${reqFromDownstreamClient.headers["user-agent"]} request is destroyed, no need to proxy request to upstream ${targetUrl} any more.`)
                 return;
             }
-            const okResponseOrNull = await fetchFromRegistry(targetRegistry, targetUrl, reqFromDownstreamClient, limiter);
+            const okResponseOrNull = await fetchFromRegistry(targetRegistry, targetUrl, reqFromDownstreamClient, LIMITER);
             if (okResponseOrNull) {
                 successfulResponseFromUpstream = okResponseOrNull;
                 break;

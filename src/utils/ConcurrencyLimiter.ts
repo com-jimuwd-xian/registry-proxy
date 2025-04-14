@@ -1,8 +1,11 @@
-export default class ReentrantConcurrencyLimiter {
+/**
+ * 并发控制器
+ * @note 不支持重入，重入可能导致死锁
+ */
+export default class ConcurrencyLimiter {
     readonly maxConcurrency: number;
     private current: number = 0;
     private queue: Array<() => void> = [];
-    private executionStack: Array<{ contextId: symbol; depth: number }> = [];
 
     constructor(maxConcurrency: number) {
         if (maxConcurrency <= 0) {
@@ -11,50 +14,28 @@ export default class ReentrantConcurrencyLimiter {
         this.maxConcurrency = maxConcurrency;
     }
 
-    private getContextId(): symbol {
-        return Symbol('context');
-    }
-
     async acquire(): Promise<void> {
-        const contextId = this.getContextId();
-        const existingContext = this.executionStack.find(c => c.contextId === contextId);
-
-        if (existingContext) {
-            existingContext.depth++;
-            return;
-        }
-
         if (this.current < this.maxConcurrency) {
             this.current++;
-            this.executionStack.push({contextId, depth: 1});
             return;
         }
-
         return new Promise((resolve) => {
-            this.queue.push(() => {
-                this.current++;
-                this.executionStack.push({contextId, depth: 1});
-                resolve();
-            });
+            this.queue.push(resolve);
         });
     }
 
     release(): void {
-        if (this.executionStack.length === 0) {
+        if (this.current <= 0) {
             throw new Error("release() called without acquire()");
         }
-
-        const lastContext = this.executionStack[this.executionStack.length - 1];
-        lastContext.depth--;
-
-        if (lastContext.depth === 0) {
-            this.executionStack.pop();
-            this.current--;
-
-            if (this.queue.length > 0) {
-                const next = this.queue.shift();
-                if (next) next();
-            }
+        this.current--;
+        const next = this.queue.shift();
+        if (next) {
+            // 异步执行，避免递归调用栈溢出
+            Promise.resolve().then(() => {
+                this.current++;
+                next();
+            });
         }
     }
 
