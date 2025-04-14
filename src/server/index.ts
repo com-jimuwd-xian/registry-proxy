@@ -490,15 +490,17 @@ export async function startProxyServer(
         };
         server.on('error', errHandler/*this handler will call 'reject'*/);
         server.on('connection', connectionHandler);
-        // 为了代理服务器的安全性，暂时只监听本机ipv6地址【::1】，不能对本机之外暴露本代理服务地址避免造成安全隐患
-        // 注意：截止目前yarn客户端如果通过localhost:<port>来访问本服务，可能会报错ECONNREFUSED错误码，原因是yarn客户端环境解析“localhost”至多个地址，它会尝试轮询每个地址。
-        const ipv6OnlyHost = '::1';
-        const listenOptions: ListenOptions = {port, host: ipv6OnlyHost, ipv6Only: true};
+        // 安全提示：为了代理服务器的安全性，暂时只监听本机ipv6地址【127.0.0.1】，不能对本机之外暴露本代理服务地址避免造成安全隐患。
+        // 兼容性说明：
+        // 1、不使用ipv6地址因为旧的docker容器内部并未开放ipv6，为了最大成都兼容容器内运行registry-proxy，只使用ipv4了。
+        // 2、yarn客户端应当通过127.0.0.1:<port>而非localhost:<port>来访问本服务，原因是yarn客户端环境解析“localhost”至多个地址，它会尝试轮询每个地址，其中某地址可能会报错ECONNREFUSED错误码，会导致yarn install执行失败。
+        const ipv4LocalhostIp = '127.0.0.1';
+        const listenOptions: ListenOptions = {port, host: ipv4LocalhostIp, ipv6Only: false};
         server.listen(listenOptions, async () => {
             const addressInfo = server.address() as AddressInfo;
             port = addressInfo.port;// 回写上层局部变量
             await writePortFile(port);
-            logger.info(`Proxy server running on ${proxyInfo.https ? 'https' : 'http'}://[${ipv6OnlyHost}]:${port}${basePathPrefixedWithSlash === '/' ? '' : basePathPrefixedWithSlash}`);
+            logger.info(`Proxy server running on ${proxyInfo.https ? 'https' : 'http'}://${ipv4LocalhostIp}:${port}${basePathPrefixedWithSlash === '/' ? '' : basePathPrefixedWithSlash}`);
             resolve(server);
         });
     });
@@ -516,7 +518,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         globalYarnPath,
         parseInt(port, 10) || 0
     ).catch(async err => {
-        logger.error('Failed to start server:', err);
+        logger.error('Failed to start server', err);
         await gracefulShutdown();
     });
 }
