@@ -217,10 +217,10 @@ async function _fetchFromRegistry(
             logger.debug(() => `Success response from upstream ${targetUrl}: ${response.status} ${response.statusText}
             content-type=${response.headers.get('content-type')} content-encoding=${response.headers.get('content-encoding')} content-length=${response.headers.get('content-length')} transfer-encoding=${response.headers.get('transfer-encoding')}`);
             return response;
-        } else if (response.status == 301) {
-            // HTTP 301 Permanently Moved.
+        } else if (response.status == 301 || response.status == 308) {
+            // HTTP 301 Permanently Moved /  HTTP 308 Permanent Redirect
             logger.info(`${response.status} ${response.statusText} response from upstream ${targetUrl}, moved to location=${response.headers.get('location')}`);
-            // 对于301永久转义响应，registry-proxy 的行为：透传给下游客户端，让客户端自行跳转（提示：这个跳转后的请求将不再走registry-proxy代理了）
+            // 对于301/308永久转义响应，registry-proxy 的行为：透传给下游客户端，让客户端自行跳转（提示：这个跳转后的请求将不再走registry-proxy代理了）
             return response;
         } else if (response.status == 302 || response.status == 303 || response.status == 307) {
             // 302 Found / 303 See Other / 307 Temporary Redirect 临时重定向 是常见的 HTTP 状态码，用于告知客户端请求的资源已被临时移动到另一个 URL，客户端应使用新的 URL 重新发起请求。
