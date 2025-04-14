@@ -249,18 +249,16 @@ async function _fetchFromRegistry(
         }
     } catch (e) {
         // Fetch form one of the configured upstream registries failed, this is expected behavior, not error.
-        if (e instanceof Error) {
-            const errCode = (e as any).code;
-            if (errCode === 'ECONNREFUSED') {
-                logger.info(`Upstream ${targetUrl} refused connection [ECONNREFUSED], skip fetching from registry ${registry.normalizedRegistryUrl}`);
-            } else if (errCode === 'ENOTFOUND') {
-                logger.info(`Unknown upstream domain name in ${targetUrl} [ENOTFOUND], skip fetching from registry ${registry.normalizedRegistryUrl}.`)
-            } else {
-                // Other net error code, print log with stacktrace
-                logger.warn(`Failed to fetch from ${targetUrl}, ${e.message}`, e);
-            }
+        const errCode = (e as any)?.code;
+        if (errCode === 'ECONNREFUSED') {
+            logger.info(`Upstream ${targetUrl} refused connection [ECONNREFUSED], skip fetching from registry ${registry.normalizedRegistryUrl}`);
+        } else if (errCode === 'ENOTFOUND') {
+            logger.info(`Unknown hostname in upstream url ${targetUrl} [ENOTFOUND], skip fetching from registry ${registry.normalizedRegistryUrl}.`)
+        } else if (errCode === 'EAI_AGAIN') {
+            logger.info(`Could not resolve hostname in upstream url ${targetUrl} [EAI_AGAIN], skip fetching from registry ${registry.normalizedRegistryUrl}.`)
         } else {
-            logger.error("Unknown error", e);
+            // Other net error code, print log with stacktrace
+            logger.warn(`Failed to fetch from ${targetUrl}`, e);
         }
         // Return null means skipping current upstream registry.
         return null;
