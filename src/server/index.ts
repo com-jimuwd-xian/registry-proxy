@@ -196,8 +196,8 @@ async function fetchFromRegistry(
         // 合并 headersFromDownstreamClient 和 authorizationHeaders
         const mergedHeaders = {...headersFromDownstreamClient, ...authorizationHeaders,};
         // (mergedHeaders as any).connection = "keep-alive"; 不允许私自添加 connection: keep-alive header，应当最终下游客户端自己的选择
-        // 替换“Host”头为upstream的host
-        const upstreamHost = new URL(registry.normalizedRegistryUrl).host;
+        // 替换“Host”头为upstream的host，注意这里要目标url，不能直接使用registryInfo内的normalizedUrl，以便兼容重定向的情况（此时targetUrl的host可能与registryInfo.normalizedUrl不同）.
+        const upstreamHost = new URL(targetUrl).host;
         if (mergedHeaders.host) {
             logger.debug(() => `Replace 'Host=${mergedHeaders.host}' header in downstream request to upstream 'Host=${upstreamHost}' header when proxying to upstream ${targetUrl}.`);
             mergedHeaders.host = upstreamHost;
@@ -207,14 +207,37 @@ async function fetchFromRegistry(
             logger.debug(() => `Success response from upstream ${targetUrl}: ${response.status} ${response.statusText}
             content-type=${response.headers.get('content-type')} content-encoding=${response.headers.get('content-encoding')} content-length=${response.headers.get('content-length')} transfer-encoding=${response.headers.get('transfer-encoding')}`);
             return response;
+        } else if (response.status === 302 || response.status === 307 || response.status === 303) {
+            // 302 Found / 303 See Other / 307 Temporary Redirect 临时重定向 是常见的 HTTP 状态码，用于告知客户端请求的资源已被临时移动到另一个 URL，客户端应使用新的 URL 重新发起请求。
+            // 一个典型的例子：registry.npmmirror.com镜像仓库 会对其tarball下载地址临时重定向到cdn地址，比如你访问https://registry.npmmirror.com/color-name/-/color-name-1.1.4.tgz，会得到
+            // Status Code: 302 Found
+            // location: https://cdn.npmmirror.com/packages/color-name/1.1.4/color-name-1.1.4.tgz
+            // 此时 registry-proxy 的行为：主动跟随重定向，然后将 response from redirected url 透传给下游。
+            const redirectedLocation = response.headers.get('location');
+            if (redirectedLocation) {
+                logger.info(`${response.status} ${response.statusText} response from upstream ${targetUrl}
+                Fetching from redirected location=${redirectedLocation}`);
+                return await fetchFromRegistry(registry, redirectedLocation, reqFromDownstreamClient, limiter);
+            } else {
+                logger.warn(`${response.status} ${response.statusText} response from upstream ${targetUrl}, but redirect location is empty, skip fetching from ${targetUrl}`);
+                // Return null means skipping current upstream registry.
+                return null;
+            }
+        } else if (response.status === 301) {
+            // HTTP 301 Permanently Moved.
+            logger.info(`${response.status} ${response.statusText} response from upstream ${targetUrl}, moved to location=${response.headers.get('location')}`);
+            // 对于301永久转义响应，registry-proxy 的行为：透传给下游客户端，让客户端自行跳转（提示：这个跳转后的请求将不再走registry-proxy代理了）
+            return response;
         } else {
+            // Fetch form one of the configured upstream registries failed, this is expected behavior, not error.
             logger.debug(async () => `Failure response from upstream ${targetUrl}: ${response.status} ${response.statusText} 
             content-type=${response.headers.get('content-type')} content-encoding=${response.headers.get('content-encoding')} content-length=${response.headers.get('content-length')} transfer-encoding=${response.headers.get('transfer-encoding')}
             body=${await response.text()}`);
+            // Return null means skipping current upstream registry.
             return null;
         }
     } catch (e) {
-        // Fetch form one of the confiured upstream registries failed, this is expected, not error.
+        // Fetch form one of the configured upstream registries failed, this is expected behavior, not error.
         if (e instanceof Error) {
             const errCode = (e as any).code;
             if (errCode === 'ECONNREFUSED') {
@@ -222,13 +245,13 @@ async function fetchFromRegistry(
             } else if (errCode === 'ENOTFOUND') {
                 logger.info(`Unknown upstream domain name in ${targetUrl} [ENOTFOUND], skip fetching from registry ${registry.normalizedRegistryUrl}.`)
             } else {
-                // other net error code, pring log with stacktrace
+                // Other net error code, print log with stacktrace
                 logger.warn(`Failed to fetch from ${targetUrl}, ${e.message}`, e);
             }
         } else {
             logger.error("Unknown error", e);
         }
-        // return null means skipping current upstream registry.
+        // Return null means skipping current upstream registry.
         return null;
     } finally {
         limiter.release();
@@ -252,10 +275,7 @@ async function writeResponseToDownstreamClient(
 
     try {
         const contentType = upstreamResponse.headers.get("content-type");
-        if (!contentType) {
-            logger.error(`Response from upstream content-type header is absent, ${targetUrl} `);
-            await gracefulShutdown();
-        } else if (contentType.includes('application/json')) { // JSON 处理逻辑
+        if (contentType?.includes('application/json')) { // JSON 处理逻辑
             const data = await upstreamResponse.json() as PackageData;
             if (data.versions) { // 处理node依赖包元数据
                 logger.debug(() => "Write package meta data application/json response from upstream to downstream", targetUrl);
@@ -283,7 +303,7 @@ async function writeResponseToDownstreamClient(
             resToDownstreamClient.setHeader('content-length', Buffer.byteLength(bodyData));
             logger.info(`Response to downstream client headers`, JSON.stringify(resToDownstreamClient.getHeaders()), targetUrl);
             resToDownstreamClient.writeHead(upstreamResponse.status).end(bodyData);
-        } else if (contentType.includes('application/octet-stream')) { // 二进制流处理
+        } else if (contentType?.includes('application/octet-stream')) { // 二进制流处理
             logger.debug(() => `Write application/octet-stream response from upstream to downstream, upstream url is ${targetUrl}`);
             if (!upstreamResponse.body) {
                 logger.error(`Empty response body from upstream ${targetUrl}`);
@@ -342,15 +362,27 @@ async function writeResponseToDownstreamClient(
                     });
             }
         } else {
-            logger.warn(`Write unsupported content-type=${contentType} response from upstream to downstream. Upstream url is ${targetUrl}`);
+            if (!contentType) {
+                logger.warn(`Response from upstream content-type header is absent, ${targetUrl} `);
+            } else {
+                logger.warn(`Write unsupported content-type=${contentType} response from upstream to downstream. Upstream url is ${targetUrl}`);
+            }
             const bodyData = await upstreamResponse.text();
-            resToDownstreamClient.removeHeader('transfer-encoding');
-            // 默认是 connection: keep-alive 和 keep-alive: timeout=5，这里直接给它咔嚓掉
-            resToDownstreamClient.setHeader('connection', 'close');
-            resToDownstreamClient.removeHeader('Keep-Alive');
-            resToDownstreamClient.setHeader('content-type', contentType);
-            resToDownstreamClient.setHeader('content-length', Buffer.byteLength(bodyData));
-            logger.debug(() => `Response to downstream client headers ${JSON.stringify(resToDownstreamClient.getHeaders())} Upstream url is ${targetUrl}`);
+            {
+                // 对于不规范的registry server，我们对其header做合理化整理，如下
+                {
+                    // 默认是 connection: keep-alive 和 keep-alive: timeout=5，这里直接给它咔嚓掉
+                    resToDownstreamClient.setHeader('connection', 'close');
+                    resToDownstreamClient.removeHeader('Keep-Alive');
+                }
+                if (contentType) resToDownstreamClient.setHeader('content-type', contentType); else resToDownstreamClient.removeHeader('content-type');
+                {
+                    // 强制用固定的content-length
+                    resToDownstreamClient.removeHeader('transfer-encoding');
+                    resToDownstreamClient.setHeader('content-length', Buffer.byteLength(bodyData));
+                }
+                logger.debug(() => `Response to downstream client headers ${JSON.stringify(resToDownstreamClient.getHeaders())} Upstream url is ${targetUrl}`);
+            }
             resToDownstreamClient.writeHead(upstreamResponse.status).end(bodyData);
         }
     } catch (err) {
