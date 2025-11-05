@@ -146,7 +146,7 @@ async function main() {
         console.log(`Set npmRegistryServer to http://127.0.0.1:${PROXY_PORT}`);
         registerCleanup(async () => {
             try {
-                await execa('yarn', ['config', 'unset', 'npmRegistryServer']);
+                await execa('yarn', ['config', 'unset', 'npmRegistryServer']);//这里使用unset，有个缺点就是如果工程中.yarnrc.yml原本配置的只读registryServer没有恢复而是被清空了！国内的网络再执行任何拉取操作或yarn dlx命令容易超时！
                 console.log('Cleared npmRegistryServer configuration');
             } catch {
             }
