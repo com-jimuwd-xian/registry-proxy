@@ -115,8 +115,7 @@ async function startLocalRegistryProxyServerAndYarnInstallWithoutCleanup() {
     // Start registry proxy
     console.log(`Starting registry-proxy@${REGISTRY_PROXY_VERSION} local server in the background...`);
     // 提示：这里借助了execa调用"yarn dlx"后台运行registry proxy server的功能，没有直接使用本地ts函数调用的方式启动本地代理服务器，因为后者不太容易达到后台运行的效果。
-    proxyProcess = execa('yarn', [
-        'dlx', '-p', `com.jimuwd.xian.registry-proxy@${REGISTRY_PROXY_VERSION}`, 'registry-proxy',
+    proxyProcess = execa('yarn', ['dlx', '-p', `com.jimuwd.xian.registry-proxy@${REGISTRY_PROXY_VERSION}`, 'registry-proxy',
         /*是不是可以传空，让server使用默认值？*/'.registry-proxy.yml',
         /*是不是可以传空，让server使用默认值？*/'.yarnrc.yml',
         /*是不是可以传空，让server使用默认值？*/path.join(process.env.HOME || '', '.yarnrc.yml'),
@@ -139,7 +138,7 @@ async function startLocalRegistryProxyServerAndYarnInstallWithoutCleanup() {
         }
     });
 
-    // Wait for proxy to start
+    // Wait for proxy server to start
     console.log('Waiting for proxy server to start (up to 30 seconds)...');
     const fileExists = await waitForFile(PORT_FILE, MAX_WAIT_TIME_MS);
     if (!fileExists) {
