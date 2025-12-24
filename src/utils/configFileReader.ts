@@ -9,6 +9,7 @@ const {readFile} = fsPromises;
 
 /**
  * 读取yml配置文件为yml对象
+ * @note 如果配置文件不存在，那么返回空对象，不抛异常。
  * @param path yml文件路径
  */
 async function readYarnConfig(path: string): Promise<YarnConfig> {
