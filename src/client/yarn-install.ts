@@ -116,11 +116,10 @@ async function startLocalRegistryProxyServerAndYarnInstallWithoutCleanup() {
     console.log(`Starting registry-proxy@${REGISTRY_PROXY_VERSION} local server in the background...`);
     // 提示：这里借助了execa调用"yarn dlx"后台运行registry proxy server的功能，没有直接使用本地ts函数调用的方式启动本地代理服务器，因为后者不太容易达到后台运行的效果。
     proxyProcess = execa('yarn', [
-        'dlx', '-p', `com.jimuwd.xian.registry-proxy@${REGISTRY_PROXY_VERSION}`,
-        'registry-proxy',
-        '.registry-proxy.yml',
-        '.yarnrc.yml',
-        path.join(process.env.HOME || '', '.yarnrc.yml'),
+        'dlx', '-p', `com.jimuwd.xian.registry-proxy@${REGISTRY_PROXY_VERSION}`, 'registry-proxy',
+        /*是不是可以传空，让server使用默认值？*/'.registry-proxy.yml',
+        /*是不是可以传空，让server使用默认值？*/'.yarnrc.yml',
+        /*是不是可以传空，让server使用默认值？*/path.join(process.env.HOME || '', '.yarnrc.yml'),
         /*之前是写死的静态端口40061，它有个缺点就是本地无法为多个项目工程并发执行yarn-install，现改为使用随机可用端口作为本地代理服务器端口，传'0'/''空串即可*/'0'
     ], {
         detached: true,
@@ -129,13 +128,13 @@ async function startLocalRegistryProxyServerAndYarnInstallWithoutCleanup() {
 
     registerCleanup(async (_exitCode) => {
         if (proxyProcess && !proxyProcess.killed) {
-            console.log('Stopping proxy server...');
+            console.log('Stopping registry-proxy local server...');
             try {
                 proxyProcess.kill('SIGTERM');
                 await proxyProcess;
-                console.log('Proxy server stopped.');
+                console.log('Registry-proxy local server stopped.');
             } catch (err) {// cleanup程序不要抛出异常
-                console.error('Proxy server stopping with error', err)
+                console.error('Registry-proxy local server stopping with error', err)
             }
         }
     });
@@ -156,20 +155,20 @@ async function startLocalRegistryProxyServerAndYarnInstallWithoutCleanup() {
     // Configure yarn
     const {exitCode, stdout} = await execa('yarn', ['config', 'get', 'npmRegistryServer']);
     const npmRegistryServer = (exitCode === 0 && stdout) ? stdout.trim() : undefined;
-    const localNpmRegistryServer = (await readYarnConfig('.yarnrc.yml')).npmRegistryServer;
-    if (localNpmRegistryServer && localNpmRegistryServer === npmRegistryServer) console.log("Using npmRegistryServer value in project local .yarnrc.yml config file.");
-    else console.log("Using npmRegistryServer value in global config file.");
+    const localNpmRegistryServer = (await readYarnConfig('.yarnrc.yml')).npmRegistryServer?.trim();
+    if (localNpmRegistryServer && localNpmRegistryServer === npmRegistryServer) console.log(`Using npmRegistryServer value in project local .yarnrc.yml: ${localNpmRegistryServer}`);
+    else console.log(`Using npmRegistryServer value in ${path.join(process.env.HOME || '', '.yarnrc.yml')}: ${npmRegistryServer}`);
     await execa('yarn', ['config', 'set', 'npmRegistryServer', `http://127.0.0.1:${PROXY_PORT}`]);
     console.log(`Set npmRegistryServer to http://127.0.0.1:${PROXY_PORT}`);
     registerCleanup(async () => {
         try {
             //if (npmRegistryServer) {//不能用这个变量来恢复为原来的 npmRegistryServer，因为它可能是全局配置~/.yarnrc.yml内的配置值或yarn工具官方默认值，而非本地.yarnrc.yml配置值。
-            if (localNpmRegistryServer && localNpmRegistryServer.trim()) {//恢复为本地配置文件原来的 npmRegistryServer 配置值
+            if (localNpmRegistryServer) {//恢复为本地配置文件原来的 npmRegistryServer 配置值
                 await execa('yarn', ['config', 'set', 'npmRegistryServer', localNpmRegistryServer]);
-                console.log(`Recover npmRegistryServer to ${localNpmRegistryServer}`);
+                console.log(`Recover npmRegistryServer to ${localNpmRegistryServer} in local '.yarnrc.yml'.`);
             } else {//原来本地配置文件中没有npmRegistryServer，则重置npmRegistryServer
                 await execa('yarn', ['config', 'unset', 'npmRegistryServer']);
-                console.log(`Unset npmRegistryServer.`);
+                console.log(`Unset npmRegistryServer value in local '.yarnrc.yml'.`);
             }
         } catch (err) {//cleanup程序不要抛出异常
             console.error('Recover yarn config npmRegistryServer error.', err);
