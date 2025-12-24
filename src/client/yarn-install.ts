@@ -156,10 +156,12 @@ async function startLocalRegistryProxyServerAndYarnInstallWithoutCleanup() {
     const {exitCode, stdout} = await execa('yarn', ['config', 'get', 'npmRegistryServer']);
     const npmRegistryServer = (exitCode === 0 && stdout) ? stdout.trim() : undefined;
     const localNpmRegistryServer = (await readYarnConfig('.yarnrc.yml')).npmRegistryServer?.trim();
-    if (localNpmRegistryServer && localNpmRegistryServer === npmRegistryServer) console.log(`Using npmRegistryServer value in project local .yarnrc.yml: ${localNpmRegistryServer}`);
-    else console.log(`Using npmRegistryServer value in ${path.join(process.env.HOME || '', '.yarnrc.yml')}: ${npmRegistryServer}`);
+    if (localNpmRegistryServer && localNpmRegistryServer === npmRegistryServer) console.log(`NpmRegistryServer value in project local .yarnrc.yml: ${localNpmRegistryServer}`);
+    else console.log(`NpmRegistryServer value in ${path.join(process.env.HOME || '', '.yarnrc.yml')}: ${npmRegistryServer}`);
     await execa('yarn', ['config', 'set', 'npmRegistryServer', `http://127.0.0.1:${PROXY_PORT}`]);
-    console.log(`Set npmRegistryServer to http://127.0.0.1:${PROXY_PORT}`);
+    console.log(`Set npmRegistryServer config value to http://127.0.0.1:${PROXY_PORT}`);
+    console.log('Read npmRegistryServer after set using yarn config get cmd:', (await execa('yarn', ['config', 'get', 'npmRegistryServer'])).stdout);
+    console.log('Read npmRegistryServer after set using reading .yarnrc.yml file:', (await readYarnConfig('.yarnrc.yml')).npmRegistryServer?.trim());
     registerCleanup(async () => {
         try {
             //if (npmRegistryServer) {//不能用这个变量来恢复为原来的 npmRegistryServer，因为它可能是全局配置~/.yarnrc.yml内的配置值或yarn工具官方默认值，而非本地.yarnrc.yml配置值。
