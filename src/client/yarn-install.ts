@@ -113,7 +113,7 @@ async function startLocalRegistryProxyServerAndYarnInstallWithoutCleanup() {
     process.chdir(INSTALLATION_ROOT);
 
     // Start registry proxy
-    console.log(`Starting registry-proxy@${REGISTRY_PROXY_VERSION} in the background...`);
+    console.log(`Starting registry-proxy@${REGISTRY_PROXY_VERSION} local server in the background...`);
     // 提示：这里借助了execa调用"yarn dlx"后台运行registry proxy server的功能，没有直接使用本地ts函数调用的方式启动本地代理服务器，因为后者不太容易达到后台运行的效果。
     proxyProcess = execa('yarn', [
         'dlx', '-p', `com.jimuwd.xian.registry-proxy@${REGISTRY_PROXY_VERSION}`,
