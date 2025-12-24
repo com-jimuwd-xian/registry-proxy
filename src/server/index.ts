@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 import http, {createServer, IncomingMessage, Server as HttpServer, ServerResponse} from 'node:http';
 import https, {createServer as createHttpsServer, Server as HttpsServer} from 'node:https';
-import {promises as fsPromises, readFileSync} from 'node:fs';
+import nodeFs from 'node:fs';
+import path from "node:path";
 import {AddressInfo, ListenOptions} from 'node:net';
 import fetch, {HeadersInit, Response} from 'node-fetch';
 import {homedir} from 'os';
-import {join} from 'path';
 import {URL} from 'url';
 import {IncomingHttpHeaders} from "http";
 import {ServerOptions as HttpsServerOptions} from "https";
@@ -14,7 +14,13 @@ import ConcurrencyLimiter from "../utils/ConcurrencyLimiter.js";
 import {gracefulShutdown, registerProcessShutdownHook} from "./gracefullShutdown.js";
 import {writePortFile} from "../port.js";
 import resolveEnvValue from "../utils/resolveEnvValue.js";
-import {PackageData, ProxyInfo, RegistryInfo} from "../models.js";
+import {
+    PackageData,
+    ProxyInfo,
+    REGISTRY_PROXY_CONFIG_FILE_NAME,
+    RegistryInfo,
+    YARNRC_CONFIG_FILE_NAME
+} from "../models.js";
 import {readYarnConfig, resolvePath,} from "../utils/configFileReader.js";
 import {readProxyConfig,} from "./serverConfigReader.js";
 
@@ -61,9 +67,9 @@ function removeRegistryPrefix(tarballUrl: string, registries: RegistryInfo[]): s
 
 
 async function loadProxyInfo(
-    proxyConfigPath = './.registry-proxy.yml',
-    localYarnConfigPath = './.yarnrc.yml',
-    globalYarnConfigPath = join(homedir(), '.yarnrc.yml')
+    proxyConfigPath = './' + REGISTRY_PROXY_CONFIG_FILE_NAME,
+    localYarnConfigPath = './' + YARNRC_CONFIG_FILE_NAME,
+    globalYarnConfigPath = path.join(homedir(), YARNRC_CONFIG_FILE_NAME)
 ): Promise<ProxyInfo> {
     const [proxyConfig, localYarnConfig, globalYarnConfig] = await Promise.all([
         readProxyConfig(proxyConfigPath),
@@ -331,11 +337,11 @@ function getDownstreamClientIp(req: IncomingMessage) {
 
 export async function startProxyServer(
     proxyConfigPath?: string,
-    localYarnConfigPath?: string,
-    globalYarnConfigPath?: string,
+    localYarnrcConfigPath?: string,
+    globalYarnrcConfigPath?: string,
     port: number = 0, // if port==0, then the server will choose an unused port instead.
 ): Promise<HttpServer | HttpsServer> {
-    const proxyInfo = await loadProxyInfo(proxyConfigPath, localYarnConfigPath, globalYarnConfigPath);
+    const proxyInfo = await loadProxyInfo(proxyConfigPath, localYarnrcConfigPath, globalYarnrcConfigPath);
     const registryInfos = proxyInfo.registries;
     const basePathPrefixedWithSlash: string = removeEndingSlashAndForceStartingSlash(proxyInfo.basePath);
 
@@ -408,15 +414,15 @@ export async function startProxyServer(
         const keyPath = resolvePath(key);
         const certPath = resolvePath(cert);
         try {
-            await fsPromises.access(keyPath);
-            await fsPromises.access(certPath);
+            await nodeFs.promises.access(keyPath);
+            await nodeFs.promises.access(certPath);
         } catch (e) {
             logger.error(`HTTPS config error: key or cert file not found`, e);
             await gracefulShutdown();
         }
         const httpsOptions: HttpsServerOptions = {
-            key: readFileSync(keyPath),
-            cert: readFileSync(certPath),
+            key: nodeFs.readFileSync(keyPath),
+            cert: nodeFs.readFileSync(certPath),
         };
         server = createHttpsServer(httpsOptions, requestHandler);
         logger.info("Proxy server's maxSockets is", https.globalAgent.maxSockets)
@@ -469,11 +475,11 @@ export async function startProxyServer(
 // 当前模块是否是直接运行的入口文件，而不是被其他模块导入的
 if (import.meta.url === `file://${process.argv[1]}`) {
     registerProcessShutdownHook();
-    const [, , configPath, localYarnPath, globalYarnPath, port] = process.argv;
+    const [/*node*/, /*jsFileAbsolutePath*/, registryProxyConfigPath, localYarnrcPath, userHomeYarnrcPath, port] = process.argv;
     startProxyServer(
-        configPath,
-        localYarnPath,
-        globalYarnPath,
+        registryProxyConfigPath,
+        localYarnrcPath,
+        userHomeYarnrcPath,
         parseInt(port, 10) || 0
     ).catch(async err => {
         logger.error('Failed to start server', err);

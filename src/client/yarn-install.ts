@@ -4,9 +4,12 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {execa} from 'execa';
+import {homedir} from "os";
 import findProjectRoot from "../utils/findProjectRoot.js";
 import {isPortConnectable} from "../utils/portTester.js";
 import {readYarnConfig} from "../utils/configFileReader.js";
+import {PORT_FILE_NAME, YARNRC_CONFIG_FILE_NAME, REGISTRY_PROXY_CONFIG_FILE_NAME} from "../models.js";
+import {readPortFile, waitForPortFile} from "../port.js";
 
 // Type definitions
 type CleanupHandler = (exitCode: number) => Promise<void>;
@@ -14,42 +17,13 @@ type SignalHandler = () => Promise<void>;
 
 // Constants
 const REGISTRY_PROXY_VERSION = process.env.REGISTRY_PROXY_VERSION || 'latest';
-const LOCK_FILE_NAME = '.registry-proxy-install.lock';
-const PORT_FILE_NAME = '.registry-proxy-port';
-const MAX_WAIT_TIME_MS = 30000; // 30 seconds
-const CHECK_INTERVAL_MS = 100;  // 0.1 seconds
+const LOCK_FILE_NAME = '.registry-proxy-install.lock';//yarn install程序锁文件名
 
 // Global state
 let proxyProcess: ReturnType<typeof execa> | null = null;
 let cleanupHandlers: CleanupHandler[] = [];
 let signalHandlers: SignalHandler[] = [];
 
-
-async function waitForFile(filePath: string, timeoutMs: number): Promise<boolean> {
-    const startTime = Date.now();
-    while (Date.now() - startTime < timeoutMs) {
-        try {
-            await fs.access(filePath);
-            return true;
-        } catch {
-            await new Promise(r => setTimeout(r, CHECK_INTERVAL_MS));
-        }
-    }
-    return false;
-}
-
-/**
- * 读取约定的端口文件内容
- * @param filePath 由server端启动时生成的端口文件路径
- */
-async function readPortFile(filePath: string): Promise<number> {
-    const content = await fs.readFile(filePath, 'utf-8');
-    const port = parseInt(content.trim(), 10);
-    if (isNaN(port) || port < 1 || port > 65535) {
-        throw new Error(`Invalid port number ${port} in ${filePath}`);
-    }
-    return port;
-}
 
 // Cleanup management
 async function cleanup(exitCode: number = 1): Promise<never> {
@@ -89,6 +63,9 @@ async function startLocalRegistryProxyServerAndYarnInstallWithoutCleanup() {
     const INSTALLATION_ROOT = await findProjectRoot();
     const LOCK_FILE = path.join(INSTALLATION_ROOT, LOCK_FILE_NAME);
     const PORT_FILE = path.join(INSTALLATION_ROOT, PORT_FILE_NAME);
+    const REGISTRY_PROXY_CONFIG_FILE = path.join(INSTALLATION_ROOT, REGISTRY_PROXY_CONFIG_FILE_NAME);
+    const LOCAL_YARNRC_FILE = path.join(INSTALLATION_ROOT, YARNRC_CONFIG_FILE_NAME);
+    const USER_HOME_YARNRC_FILE = path.join(homedir(), YARNRC_CONFIG_FILE_NAME);
 
     // Check for existing lock file
     try {
@@ -115,10 +92,10 @@ async function startLocalRegistryProxyServerAndYarnInstallWithoutCleanup() {
     // Start registry proxy
     console.log(`Starting registry-proxy@${REGISTRY_PROXY_VERSION} local server in the background...`);
     // 提示：这里借助了execa调用"yarn dlx"后台运行registry proxy server的功能，没有直接使用本地ts函数调用的方式启动本地代理服务器，因为后者不太容易达到后台运行的效果。
-    proxyProcess = execa('yarn', ['dlx', '-p', `com.jimuwd.xian.registry-proxy@${REGISTRY_PROXY_VERSION}`, 'registry-proxy',
-        /*是不是可以传空，让server使用默认值？*/'.registry-proxy.yml',
-        /*是不是可以传空，让server使用默认值？*/'.yarnrc.yml',
-        /*是不是可以传空，让server使用默认值？*/path.join(process.env.HOME || '', '.yarnrc.yml'),
+    proxyProcess = execa('yarn', ['dlx', '-p', `com.jimuwd.xian.registry-proxy@${REGISTRY_PROXY_VERSION}`, /*js程序名，见package.json bin配置值*/'registry-proxy',
+        /*是不是可以传空，让server使用默认值？*/REGISTRY_PROXY_CONFIG_FILE,
+        /*是不是可以传空，让server使用默认值？*/LOCAL_YARNRC_FILE,
+        /*是不是可以传空，让server使用默认值？*/USER_HOME_YARNRC_FILE,
         /*之前是写死的静态端口40061，它有个缺点就是本地无法为多个项目工程并发执行yarn-install，现改为使用随机可用端口作为本地代理服务器端口，传'0'/''空串即可*/'0'
     ], {
         detached: true,
@@ -138,13 +115,8 @@ async function startLocalRegistryProxyServerAndYarnInstallWithoutCleanup() {
         }
     });
 
-    // Wait for proxy server to start
-    console.log('Waiting for proxy server to start (up to 30 seconds)...');
-    const fileExists = await waitForFile(PORT_FILE, MAX_WAIT_TIME_MS);
-    if (!fileExists) {
-        throw new Error(`Proxy server failed to create port file after ${MAX_WAIT_TIME_MS / 1000} seconds`);
-    }
-
+    //阻塞等待端口文件就绪
+    await waitForPortFile(INSTALLATION_ROOT)
     const PROXY_PORT = await readPortFile(PORT_FILE);
     const portConnectable = await isPortConnectable(PROXY_PORT);
     if (!portConnectable) {
@@ -156,7 +128,7 @@ async function startLocalRegistryProxyServerAndYarnInstallWithoutCleanup() {
     const npmRegistryServer = (exitCode === 0 && stdout) ? stdout.trim() : undefined;
     const localNpmRegistryServer = (await readYarnConfig('.yarnrc.yml')).npmRegistryServer?.trim();
     if (localNpmRegistryServer && localNpmRegistryServer === npmRegistryServer) console.log(`NpmRegistryServer value in project local .yarnrc.yml: ${localNpmRegistryServer}`);
-    else console.log(`NpmRegistryServer value in ${path.join(process.env.HOME || '', '.yarnrc.yml')}: ${npmRegistryServer}`);
+    else console.log(`NpmRegistryServer value in ${path.join(homedir(), '.yarnrc.yml')}: ${npmRegistryServer}`);
     await execa('yarn', ['config', 'set', 'npmRegistryServer', `http://127.0.0.1:${PROXY_PORT}`]);
     console.log(`Set npmRegistryServer config value to http://127.0.0.1:${PROXY_PORT}`);
     console.log('Read npmRegistryServer after set using yarn config get cmd:', (await execa('yarn', ['config', 'get', 'npmRegistryServer'])).stdout);
