@@ -1,3 +1,8 @@
+const REGISTRY_PROXY_CONFIG_FILE_NAME = '.registry-proxy.yml';//server配置文件名
+const PORT_FILE_NAME = '.registry-proxy-port';//server、client共享使用的端口号文件名
+const YARNRC_CONFIG_FILE_NAME = '.yarnrc.yml';//server、client共享使用的yarn配置文件名
+
+
 interface RegistryConfig {
     npmAuthToken?: string;
 }
@@ -45,5 +50,8 @@ export {
     RegistryInfo,
     ProxyInfo,
     PackageVersion,
-    PackageData
+    PackageData,
+    REGISTRY_PROXY_CONFIG_FILE_NAME,
+    PORT_FILE_NAME,
+    YARNRC_CONFIG_FILE_NAME,
 }
