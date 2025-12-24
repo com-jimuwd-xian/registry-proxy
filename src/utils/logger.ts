@@ -18,16 +18,19 @@ const PREFIX = {
 // 代理服务器专用日志
 const logger = {
     info: (...args: any[]) =>
-        console.log(`${PREFIX.proxy}`, ...args),
+        /*console.log(`${PREFIX.proxy}`, ...args),*/
+    {},
 
     success: (...args: any[]) =>
-        console.log(`${PREFIX.proxy} ${COLORS.success}✓${COLORS.reset}`, ...args),
+        /*console.log(`${PREFIX.proxy} ${COLORS.success}✓${COLORS.reset}`, ...args),*/
+    {},
 
     error: (...args: any[]) =>
         console.error(`${PREFIX.error}`, ...args),
 
     warn: (...args: any[]) =>
-        console.warn(`${PREFIX.warn}`, ...args),
+        /*console.warn(`${PREFIX.warn}`, ...args),*/
+    {},
 
     debug: (...args: any[]) =>
         process.env.DEBUG && console.debug(`${PREFIX.debug}`, ...args)

@@ -1,12 +1,11 @@
 #!/usr/bin/env node
 import http, {createServer, IncomingMessage, Server as HttpServer, ServerResponse} from 'node:http';
 import https, {createServer as createHttpsServer, Server as HttpsServer} from 'node:https';
-import {existsSync, promises as fsPromises, readFileSync} from 'node:fs';
+import {promises as fsPromises, readFileSync} from 'node:fs';
 import {AddressInfo, ListenOptions} from 'node:net';
-import {load} from 'js-yaml';
 import fetch, {HeadersInit, Response} from 'node-fetch';
 import {homedir} from 'os';
-import {join, resolve} from 'path';
+import {join} from 'path';
 import {URL} from 'url';
 import {IncomingHttpHeaders} from "http";
 import {ServerOptions as HttpsServerOptions} from "https";
@@ -15,46 +14,9 @@ import ConcurrencyLimiter from "../utils/ConcurrencyLimiter.js";
 import {gracefulShutdown, registerProcessShutdownHook} from "./gracefullShutdown.js";
 import {writePortFile} from "../port.js";
 import resolveEnvValue from "../utils/resolveEnvValue.js";
-
-const {readFile} = fsPromises;
-
-interface RegistryConfig {
-    npmAuthToken?: string;
-}
-
-interface HttpsConfig {
-    key: string;
-    cert: string;
-}
-
-interface ProxyConfig {
-    registries: Record<string, RegistryConfig | null>;
-    https?: HttpsConfig;
-    basePath?: string;
-}
-
-interface YarnConfig {
-    npmRegistries?: Record<string, RegistryConfig | null>;
-}
-
-interface RegistryInfo {
-    normalizedRegistryUrl: string;
-    token?: string;
-}
-
-interface ProxyInfo {
-    registries: RegistryInfo[];
-    https?: HttpsConfig;
-    basePath?: string;
-}
-
-interface PackageVersion {
-    dist?: { tarball?: string };
-}
-
-interface PackageData {
-    versions?: Record<string, PackageVersion>;
-}
+import {PackageData, ProxyInfo, RegistryInfo} from "../models.js";
+import {readYarnConfig, resolvePath,} from "../utils/configFileReader.js";
+import {readProxyConfig,} from "./serverConfigReader.js";
 
 // 整个registry-proxy server实例 使用的全局限流器
 const LIMITER = new ConcurrencyLimiter(5);
@@ -83,9 +45,6 @@ function normalizeUrl(httpOrHttpsUrl: string): string {
     }
 }
 
-function resolvePath(path: string): string {
-    return path.startsWith('~/') ? join(homedir(), path.slice(2)) : resolve(path);
-}
 
 function removeRegistryPrefix(tarballUrl: string, registries: RegistryInfo[]): string {
     const normalizedTarball = normalizeUrl(tarballUrl);
@@ -100,46 +59,6 @@ function removeRegistryPrefix(tarballUrl: string, registries: RegistryInfo[]): s
     throw new Error(`Can't find tarball url ${tarballUrl} does not match given registries ${normalizedRegistries}`)
 }
 
-/**
- * 读取yml配置文件得到配置值对象{@link ProxyConfig}
- * @note 本读取操作不会解析环境变量值
- * @param proxyConfigPath 配置文件路径
- */
-async function readProxyConfig(proxyConfigPath = './.registry-proxy.yml'): Promise<ProxyConfig> {
-    let config: ProxyConfig | undefined = undefined;
-    const resolvedPath = resolvePath(proxyConfigPath);
-    try {
-        const content = await readFile(resolvedPath, 'utf8');
-        config = load(content) as ProxyConfig;
-    } catch (e) {
-        logger.error(`Failed to load proxy config from ${resolvedPath}:`, e);
-        await gracefulShutdown();
-    }
-    if (!config?.registries) {
-        logger.error('Missing required "registries" field in config');
-        await gracefulShutdown();
-    }
-    return config as ProxyConfig;
-}
-
-/**
- * 读取yml配置文件为yml对象
- * @param path yml文件路径
- */
-async function readYarnConfig(path: string): Promise<YarnConfig> {
-    try {
-        if (existsSync(path)) {
-            const content = await readFile(resolvePath(path), 'utf8');
-            return load(content) as YarnConfig;
-        } else {
-            logger.info(`Skip reading ${path}, because it does not exist.`)
-            return {};
-        }
-    } catch (e) {
-        logger.warn(`Failed to load Yarn config from ${path}:`, e);
-        return {};
-    }
-}
 
 async function loadProxyInfo(
     proxyConfigPath = './.registry-proxy.yml',

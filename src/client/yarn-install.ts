@@ -6,6 +6,7 @@ import path from 'node:path';
 import {execa} from 'execa';
 import findProjectRoot from "../utils/findProjectRoot.js";
 import {isPortConnectable} from "../utils/portTester.js";
+import {readYarnConfig} from "../utils/configFileReader.js";
 
 // Type definitions
 type CleanupHandler = (exitCode: number) => Promise<void>;
@@ -145,15 +146,23 @@ async function main() {
 
         // Configure yarn
         const {exitCode, stdout} = await execa('yarn', ['config', 'get', 'npmRegistryServer']);
+        let npmRegistryServer = stdout.trim();
+        let localNpmRegistryServer;
+        try {
+            const localYarnConfig = await readYarnConfig('.yarnrc.yml');
+            localNpmRegistryServer = localYarnConfig.npmRegistryServer;
+        } catch {
+            localNpmRegistryServer = undefined;
+        }
         await execa('yarn', ['config', 'set', 'npmRegistryServer', `http://127.0.0.1:${PROXY_PORT}`]);
         console.log(`Set npmRegistryServer to http://127.0.0.1:${PROXY_PORT}`);
         registerCleanup(async () => {
             try {
-                let npmRegistryServer = stdout.trim();
-                if (exitCode === 0 && npmRegistryServer) {//恢复为原来的 npmRegistryServer
-                    await execa('yarn', ['config', 'set', 'npmRegistryServer', npmRegistryServer]);
-                    console.log(`Recover npmRegistryServer to ${npmRegistryServer}`);
-                } else {//原来没有npmRegistryServer，则重置npmRegistryServer
+                //if (exitCode === 0 && npmRegistryServer) {//不能用这个变量来恢复为原来的 npmRegistryServer，因为它可能是全局配置~/.yarnrc.yml内的配置值或yarn工具官方默认值，而非本地.yarnrc.yml配置值。
+                if (localNpmRegistryServer && localNpmRegistryServer.trim()) {//恢复为本地配置文件原来的 npmRegistryServer 配置值
+                    await execa('yarn', ['config', 'set', 'npmRegistryServer', localNpmRegistryServer]);
+                    console.log(`Recover npmRegistryServer to ${localNpmRegistryServer}`);
+                } else {//原来本地配置文件中没有npmRegistryServer，则重置npmRegistryServer
                     await execa('yarn', ['config', 'unset', 'npmRegistryServer']);
                     console.log(`Unset npmRegistryServer.`);
                 }
