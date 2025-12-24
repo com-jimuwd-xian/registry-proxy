@@ -45,7 +45,7 @@ async function readPortFile(filePath: string): Promise<number> {
     const content = await fs.readFile(filePath, 'utf-8');
     const port = parseInt(content.trim(), 10);
     if (isNaN(port) || port < 1 || port > 65535) {
-        throw new Error(`Invalid port number in ${filePath}`);
+        throw new Error(`Invalid port number ${port} in ${filePath}`);
     }
     return port;
 }
@@ -60,7 +60,7 @@ async function cleanup(exitCode: number = 1): Promise<never> {
             console.error('Cleanup handler error:', err);
         }
     }
-
+    console.log("Process exited with exitCode", exitCode);
     process.exit(exitCode);
 }
 
@@ -94,7 +94,8 @@ async function main() {
         registerCleanup(async () => {
             try {
                 await fs.unlink(LOCK_FILE);
-            } catch {
+            } catch (err) {//cleanup程序不要抛出任何异常
+                console.error(`Failed to delete lock file: ${LOCK_FILE}`, err)
             }
         });
 
@@ -103,13 +104,14 @@ async function main() {
 
         // Start registry proxy
         console.log(`Starting registry-proxy@${REGISTRY_PROXY_VERSION} in the background...`);
+        // 提示：这里借助了execa调用"yarn dlx"后台运行registry proxy server的功能，没有直接使用本地ts函数调用的方式启动本地代理服务器，因为后者不太容易达到后台运行的效果。
         proxyProcess = execa('yarn', [
             'dlx', '-p', `com.jimuwd.xian.registry-proxy@${REGISTRY_PROXY_VERSION}`,
             'registry-proxy',
             '.registry-proxy.yml',
             '.yarnrc.yml',
             path.join(process.env.HOME || '', '.yarnrc.yml'),
-            '40061'
+            /*之前是写死的静态端口40061，它有个缺点就是本地无法为多个项目工程并发执行yarn-install，现改为使用随机可用端口作为本地代理服务器端口，传'0'/''空串即可*/'0'
         ], {
             detached: true,
             stdio: 'inherit'
@@ -121,10 +123,10 @@ async function main() {
                 try {
                     proxyProcess.kill('SIGTERM');
                     await proxyProcess;
-                } catch {
-                    // Ignore errors
+                    console.log('Proxy server stopped.');
+                } catch (err) {// cleanup程序不要抛出异常
+                    console.error('Proxy server stopping with error', err)
                 }
-                console.log('Proxy server stopped.');
             }
         });
 
@@ -142,13 +144,21 @@ async function main() {
         }
 
         // Configure yarn
+        const {exitCode, stdout} = await execa('yarn', ['config', 'get', 'npmRegistryServer']);
         await execa('yarn', ['config', 'set', 'npmRegistryServer', `http://127.0.0.1:${PROXY_PORT}`]);
         console.log(`Set npmRegistryServer to http://127.0.0.1:${PROXY_PORT}`);
         registerCleanup(async () => {
             try {
-                await execa('yarn', ['config', 'unset', 'npmRegistryServer']);//fixme：这里使用unset，有个缺点就是如果工程中.yarnrc.yml原本配置的只读registryServer没有恢复而是被清空了！国内的网络再执行任何拉取操作或yarn dlx命令容易超时！
-                console.log('Cleared npmRegistryServer configuration：这里清空npmRegistryServer而不是恢复，有个缺点就是如果工程中.yarnrc.yml原本配置的只读registryServer没有恢复而是被清空了！国内的网络再执行任何拉取操作或yarn dlx命令容易超时！');
-            } catch {
+                let npmRegistryServer = stdout.trim();
+                if (exitCode === 0 && npmRegistryServer) {//恢复为原来的 npmRegistryServer
+                    await execa('yarn', ['config', 'set', 'npmRegistryServer', npmRegistryServer]);
+                    console.log(`Recover npmRegistryServer to ${npmRegistryServer}`);
+                } else {//原来没有npmRegistryServer，则重置npmRegistryServer
+                    await execa('yarn', ['config', 'unset', 'npmRegistryServer']);
+                    console.log(`Unset npmRegistryServer.`);
+                }
+            } catch (err) {//cleanup程序不要抛出异常
+                console.error('Recover yarn config npmRegistryServer error.', err);
             }
         });
 
@@ -161,6 +171,7 @@ async function main() {
         }
 
         // Success
+        console.info("Yarn install with local registry-proxy server success.");
         await cleanup(0);
     } catch (err) {
         console.error('Error:', err instanceof Error ? err.message : String(err));
@@ -186,8 +197,5 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     });
 
     // Start the program
-    main().catch(err => {
-        console.error('Unhandled error:', err);
-        cleanup(1);
-    });
+    await main()
 }
