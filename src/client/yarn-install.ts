@@ -96,7 +96,9 @@ async function startLocalRegistryProxyServerAndYarnInstallWithoutCleanup() {
         /*是不是可以传空，让server使用默认值？*/REGISTRY_PROXY_CONFIG_FILE,
         /*是不是可以传空，让server使用默认值？*/LOCAL_YARNRC_FILE,
         /*是不是可以传空，让server使用默认值？*/USER_HOME_YARNRC_FILE,
-        /*之前是写死的静态端口40061，它有个缺点就是本地无法为多个项目工程并发执行yarn-install，现改为使用随机可用端口作为本地代理服务器端口，传'0'/''空串即可*/'0'
+        /*本来不应该写死的静态端口40061，它有个缺点就是本地无法为多个项目工程并发执行yarn-install，最优雅的方法是使用随机可用端口作为本地代理服务器端口，传'0'/''空串，
+        * 但yarn这个工具因为某些未公开的缓存机制，导致它并不能如我们设计的那样总是使用工程中.yarnrc.yml内动态设置的npmRegistryServer代理地址，不得已这里还是写死这个端口了。*/
+        '40061'
     ], {
         detached: true,
         stdio: 'inherit'
@@ -126,25 +128,25 @@ async function startLocalRegistryProxyServerAndYarnInstallWithoutCleanup() {
     // Configure yarn
     const {exitCode, stdout} = await execa('yarn', ['config', 'get', 'npmRegistryServer']);
     const npmRegistryServer = (exitCode === 0 && stdout) ? stdout.trim() : undefined;
-    const localNpmRegistryServer = (await readYarnConfig('.yarnrc.yml')).npmRegistryServer?.trim();
-    if (localNpmRegistryServer && localNpmRegistryServer === npmRegistryServer) console.log(`NpmRegistryServer value in project local .yarnrc.yml: ${localNpmRegistryServer}`);
-    else console.log(`NpmRegistryServer value in ${path.join(homedir(), '.yarnrc.yml')}: ${npmRegistryServer}`);
+    const localNpmRegistryServer = (await readYarnConfig(YARNRC_CONFIG_FILE_NAME)).npmRegistryServer?.trim();
+    if (localNpmRegistryServer && localNpmRegistryServer === npmRegistryServer) console.log(`NpmRegistryServer value in project ${YARNRC_CONFIG_FILE_NAME}: ${localNpmRegistryServer}`);
+    else console.log(`NpmRegistryServer value in ${path.join(homedir(), YARNRC_CONFIG_FILE_NAME)}: ${npmRegistryServer}`);
     //await execa('yarn', ['config', 'set', 'enableHardenedMode', 'true']);//尝试用此方法解决新npmRegistryServer代理地址配置不生效的问题，但是不行，因此废弃：强制hardenedMode，否则yarn程序会使用不知道哪里的缓存的旧代理地址，而不是刚设置的最新的随机端口的npmRegistryServer，但是注意该值会影响向私库发布行为（yarn npm publish）。
     //await execa('yarn', ['cache', 'clean', '--all']);//尝试用此方法解决新npmRegistryServer代理地址配置不生效的问题，但行不通，因此废弃：清空缓存，解决新npmRegistryServer代理地址配置不生效的问题。
     //最终的解决方法：升级yarn版本由4.6.0至4.12.0，修改业务工程package.json中"packageManager": "yarn@4.12.0"。
     await execa('yarn', ['config', 'set', 'npmRegistryServer', `http://127.0.0.1:${PROXY_PORT}`]);
     console.log(`Set npmRegistryServer config value to http://127.0.0.1:${PROXY_PORT}`);
     console.log('Read npmRegistryServer after set using yarn config get cmd:', (await execa('yarn', ['config', 'get', 'npmRegistryServer'])).stdout);
-    console.log('Read npmRegistryServer after set using reading .yarnrc.yml file:', (await readYarnConfig('.yarnrc.yml')).npmRegistryServer?.trim());
+    console.log(`Read npmRegistryServer after set using reading ${YARNRC_CONFIG_FILE_NAME} file:`, (await readYarnConfig(YARNRC_CONFIG_FILE_NAME)).npmRegistryServer?.trim());
     registerCleanup(async () => {
         try {
             //if (npmRegistryServer) {//不能用这个变量来恢复为原来的 npmRegistryServer，因为它可能是全局配置~/.yarnrc.yml内的配置值或yarn工具官方默认值，而非本地.yarnrc.yml配置值。
             if (localNpmRegistryServer) {//恢复为本地配置文件原来的 npmRegistryServer 配置值
                 await execa('yarn', ['config', 'set', 'npmRegistryServer', localNpmRegistryServer]);
-                console.log(`Recover npmRegistryServer to ${localNpmRegistryServer} in local '.yarnrc.yml'.`);
+                console.log(`Recover npmRegistryServer to ${localNpmRegistryServer} in project '${YARNRC_CONFIG_FILE_NAME}'.`);
             } else {//原来本地配置文件中没有npmRegistryServer，则重置npmRegistryServer
                 await execa('yarn', ['config', 'unset', 'npmRegistryServer']);
-                console.log(`Unset npmRegistryServer value in local '.yarnrc.yml'.`);
+                console.log(`Unset npmRegistryServer value in project '${YARNRC_CONFIG_FILE_NAME}'.`);
             }
             //await execa('yarn', ['config', 'set', 'enableHardenedMode', 'false']);//因为上述设置hardenedMode为true的方法无法解决新npmRegistryServer代理地址配置不生效的问题，因此这里也没必要恢复了。
         } catch (err) {//cleanup程序不要抛出异常
